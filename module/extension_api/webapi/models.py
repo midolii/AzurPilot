@@ -1,5 +1,8 @@
 """REST API 请求与响应模型。"""
 
+from datetime import datetime
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -40,6 +43,84 @@ class InstanceResponse(ApiModel):
 
 class InstanceListResponse(ApiModel):
     items: list[InstanceResponse]
+
+
+class ConfigResponse(ApiModel):
+    instance: str
+    module: str
+    values: dict[str, Any]
+    redacted_paths: list[str]
+
+
+class ConfigOptionResponse(ApiModel):
+    value: Any
+    label: str
+
+
+class ConfigFieldResponse(ApiModel):
+    key: str
+    name: str
+    display_name: str
+    help: str
+    widget_type: str
+    default: Any
+    options: list[ConfigOptionResponse]
+    display: str | None
+    read_only: bool
+    sensitive: bool
+
+
+class ConfigGroupResponse(ApiModel):
+    name: str
+    display_name: str
+    help: str
+    fields: list[ConfigFieldResponse]
+
+
+class ConfigTaskResponse(ApiModel):
+    name: str
+    display_name: str
+    help: str
+    groups: list[ConfigGroupResponse]
+
+
+class ConfigMenuResponse(ApiModel):
+    name: str
+    display_name: str
+    page: str | None
+    menu_type: str | None
+    tasks: list[ConfigTaskResponse]
+
+
+class ConfigSchemaResponse(ApiModel):
+    instance: str
+    module: str
+    language: str
+    menus: list[ConfigMenuResponse]
+
+
+class TaskResponse(ApiModel):
+    name: str
+    display_name: str
+    enabled: bool
+    state: str
+    next_run: datetime | None
+
+
+class TaskListResponse(ApiModel):
+    instance: str
+    running: list[TaskResponse]
+    pending: list[TaskResponse]
+    waiting: list[TaskResponse]
+    disabled: list[TaskResponse]
+
+
+class LogTailResponse(ApiModel):
+    instance: str
+    source: str
+    lines: list[str]
+    count: int
+    truncated: bool
 
 
 class ErrorDetail(ApiModel):
