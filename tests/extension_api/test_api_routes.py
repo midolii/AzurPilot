@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 
 from module.extension_api.errors import (
     DataReadError,
+    InstanceNotFoundError,
     InvalidLanguageError,
     InvalidQueryError,
 )
@@ -54,6 +55,8 @@ class FakeFacade:
 
 class FakeConfigReadService:
     def get_config(self, instance):
+        if instance == "missing":
+            raise InstanceNotFoundError(instance)
         if instance == "broken":
             raise DataReadError("config")
         return ConfigSnapshot(
@@ -64,6 +67,8 @@ class FakeConfigReadService:
         )
 
     def get_schema(self, instance, language=None):
+        if instance == "missing":
+            raise InstanceNotFoundError(instance)
         if language == "invalid":
             raise InvalidLanguageError(language)
         field = ConfigFieldSnapshot(
@@ -107,6 +112,8 @@ class FakeConfigReadService:
 
 class FakeTaskReadService:
     def get(self, instance):
+        if instance == "missing":
+            raise InstanceNotFoundError(instance)
         task = TaskSnapshot(
             name="Main",
             display_name="主线",
@@ -125,6 +132,8 @@ class FakeTaskReadService:
 
 class FakeLogReadService:
     def get(self, instance, limit=None):
+        if instance == "missing":
+            raise InstanceNotFoundError(instance)
         if limit == "bad":
             raise InvalidQueryError("limit")
         return LogTailSnapshot(
@@ -261,6 +270,21 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(500, response.status_code)
         self.assertEqual("data_read_failed", response.json()["error"]["code"])
         self.assertNotIn("config", response.json()["error"]["message"])
+
+    def test_new_routes_reject_unknown_instance(self):
+        paths = (
+            "/api/v1/instances/missing/config",
+            "/api/v1/instances/missing/config/schema",
+            "/api/v1/instances/missing/tasks",
+            "/api/v1/instances/missing/logs",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(404, response.status_code)
+                self.assertEqual(
+                    "instance_not_found", response.json()["error"]["code"]
+                )
 
     def test_instance_data_routes_use_threadpool(self):
         async_mock = AsyncMock(
