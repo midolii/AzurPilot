@@ -345,6 +345,7 @@ def app():
         _run_gui(initial_page="manage")
 
     from mcp_server_sse import app as mcp_app
+    from module.extension_api.webapi import create_api_app
 
     application = asgi_app(
         applications=[index, manage],
@@ -359,5 +360,6 @@ def app():
         ],
         on_shutdown=[clearup],
     )
+    application.mount("/api/v1", create_api_app(), name="extension-api-v1")
     application.mount("/mcp", mcp_app)
     return application
