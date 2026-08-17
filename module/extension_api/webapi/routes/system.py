@@ -20,6 +20,12 @@ async def system(request: Request) -> JSONResponse:
             core_commit=facade.get_core_commit(),
             python_version=facade.get_python_version(),
             platform=facade.get_platform(),
-            capabilities=["instances"],
+            capabilities=[
+                "instances",
+                "instanceConfig",
+                "instanceConfigSchema",
+                "instanceTasks",
+                "instanceLogs",
+            ],
         )
     )
