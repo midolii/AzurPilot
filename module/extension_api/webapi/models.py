@@ -45,6 +45,20 @@ class InstanceListResponse(ApiModel):
     items: list[InstanceResponse]
 
 
+class LiveScreenshotStreamResponse(ApiModel):
+    """实例实时截图的媒体连接描述。"""
+
+    instance: str
+    transport: str = "websocket"
+    path: str = "/ws/live_screenshot"
+    codec: str = "h264"
+    modes: list[str] = Field(default_factory=lambda: ["auto", "scrcpy", "screenshot"])
+    default_mode: str = "auto"
+    default_fps: int = 30
+    default_width: int = 640
+    default_bitrate_scale: float = 0.7
+
+
 class ConfigResponse(ApiModel):
     instance: str
     module: str

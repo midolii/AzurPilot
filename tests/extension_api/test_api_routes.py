@@ -181,6 +181,7 @@ class TestApiRoutes(unittest.TestCase):
                 "instanceConfigSchema",
                 "instanceTasks",
                 "instanceLogs",
+                "instanceLiveScreenshot",
             ],
             response.json()["capabilities"],
         )
@@ -212,6 +213,27 @@ class TestApiRoutes(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual("running", response.json()["state"])
+
+    def test_get_live_screenshot_stream(self):
+        response = self.client.get(
+            "/api/v1/instances/alas/live-screenshot"
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            {
+                "instance": "alas",
+                "transport": "websocket",
+                "path": "/ws/live_screenshot",
+                "codec": "h264",
+                "modes": ["auto", "scrcpy", "screenshot"],
+                "defaultMode": "auto",
+                "defaultFps": 30,
+                "defaultWidth": 640,
+                "defaultBitrateScale": 0.7,
+            },
+            response.json(),
+        )
 
     def test_unknown_instance_returns_stable_error(self):
         response = self.client.get("/api/v1/instances/missing")
@@ -282,6 +304,7 @@ class TestApiRoutes(unittest.TestCase):
             "/api/v1/instances/missing/config/schema",
             "/api/v1/instances/missing/tasks",
             "/api/v1/instances/missing/logs",
+            "/api/v1/instances/missing/live-screenshot",
         )
         for path in paths:
             with self.subTest(path=path):

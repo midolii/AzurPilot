@@ -26,6 +26,7 @@ async def system(request: Request) -> JSONResponse:
                 "instanceConfigSchema",
                 "instanceTasks",
                 "instanceLogs",
+                "instanceLiveScreenshot",
             ],
         )
     )

@@ -26,6 +26,9 @@ from module.extension_api.webapi.routes.instance_data import (
     get_instance_tasks,
 )
 from module.extension_api.webapi.routes.instances import get_instance, list_instances
+from module.extension_api.webapi.routes.live_screenshot import (
+    get_live_screenshot_stream,
+)
 from module.extension_api.webapi.routes.system import health, system
 
 
@@ -121,6 +124,11 @@ def create_api_app(
             Route(
                 "/instances/{instance:str}/logs",
                 get_instance_logs,
+                methods=["GET"],
+            ),
+            Route(
+                "/instances/{instance:str}/live-screenshot",
+                get_live_screenshot_stream,
                 methods=["GET"],
             ),
             Route("/instances/{instance:str}", get_instance, methods=["GET"]),
