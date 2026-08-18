@@ -228,9 +228,9 @@ class TestApiRoutes(unittest.TestCase):
                 "codec": "h264",
                 "modes": ["auto", "scrcpy", "screenshot"],
                 "defaultMode": "auto",
-                "defaultFps": 30,
+                "defaultFps": 60,
                 "defaultWidth": 640,
-                "defaultBitrateScale": 0.7,
+                "defaultBitrateScale": 1.0,
             },
             response.json(),
         )

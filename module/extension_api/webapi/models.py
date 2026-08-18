@@ -54,9 +54,9 @@ class LiveScreenshotStreamResponse(ApiModel):
     codec: str = "h264"
     modes: list[str] = Field(default_factory=lambda: ["auto", "scrcpy", "screenshot"])
     default_mode: str = "auto"
-    default_fps: int = 30
+    default_fps: int = 60
     default_width: int = 640
-    default_bitrate_scale: float = 0.7
+    default_bitrate_scale: float = 1.0
 
 
 class ConfigResponse(ApiModel):
