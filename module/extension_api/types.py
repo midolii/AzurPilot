@@ -113,6 +113,14 @@ class TaskListSnapshot:
 
 
 @dataclass(frozen=True)
+class LogLineSnapshot:
+    """带客户端可转换时间戳的一行日志。"""
+
+    content: str
+    timestamp_ms: int | None
+
+
+@dataclass(frozen=True)
 class LogTailSnapshot:
     """有界的实例日志尾部。"""
 
@@ -121,3 +129,5 @@ class LogTailSnapshot:
     lines: tuple[str, ...]
     count: int
     truncated: bool
+    format: str = "plain"
+    entries: tuple[LogLineSnapshot, ...] = ()

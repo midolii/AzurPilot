@@ -43,5 +43,6 @@ async def get_instance_logs(request: Request) -> JSONResponse:
         request.app.state.log_read_service.get,
         request.path_params["instance"],
         request.query_params.get("limit"),
+        request.query_params.get("format"),
     )
     return model_response(LogTailResponse.model_validate(snapshot))

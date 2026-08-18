@@ -20,6 +20,7 @@ from module.extension_api.types import (
     ConfigSchemaSnapshot,
     ConfigSnapshot,
     ConfigTaskSnapshot,
+    LogLineSnapshot,
     LogTailSnapshot,
     TaskListSnapshot,
     TaskSnapshot,
@@ -119,7 +120,7 @@ class FakeTaskReadService:
             display_name="主线",
             enabled=True,
             state="running",
-            next_run=datetime(2026, 8, 17, 12, 0),
+            next_run=datetime(2026, 8, 17, 12, 0),  # noqa: DTZ001
         )
         return TaskListSnapshot(
             instance=instance,
@@ -131,7 +132,7 @@ class FakeTaskReadService:
 
 
 class FakeLogReadService:
-    def get(self, instance, limit=None):
+    def get(self, instance, limit=None, output_format=None):
         if instance == "missing":
             raise InstanceNotFoundError(instance)
         if limit == "bad":
@@ -142,6 +143,8 @@ class FakeLogReadService:
             lines=("line",),
             count=1,
             truncated=False,
+            format=output_format or "plain",
+            entries=(LogLineSnapshot(content="line", timestamp_ms=1_777_000_000_123),),
         )
 
 
@@ -244,11 +247,13 @@ class TestApiRoutes(unittest.TestCase):
         )
 
     def test_get_instance_logs(self):
-        response = self.client.get("/api/v1/instances/alas/logs?limit=20")
+        response = self.client.get("/api/v1/instances/alas/logs?limit=20&format=ansi")
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(["line"], response.json()["lines"])
         self.assertEqual("memory", response.json()["source"])
+        self.assertEqual("ansi", response.json()["format"])
+        self.assertEqual(1_777_000_000_123, response.json()["entries"][0]["timestampMs"])
 
     def test_invalid_language_returns_stable_error(self):
         response = self.client.get(

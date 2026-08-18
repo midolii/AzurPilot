@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _to_camel(value: str) -> str:
@@ -115,12 +115,19 @@ class TaskListResponse(ApiModel):
     disabled: list[TaskResponse]
 
 
+class LogLineResponse(ApiModel):
+    content: str
+    timestamp_ms: int | None
+
+
 class LogTailResponse(ApiModel):
     instance: str
     source: str
     lines: list[str]
     count: int
     truncated: bool
+    format: str = "plain"
+    entries: list[LogLineResponse] = Field(default_factory=list)
 
 
 class ErrorDetail(ApiModel):

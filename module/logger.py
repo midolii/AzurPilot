@@ -373,7 +373,7 @@ file_formatter = logging.Formatter(
 console_formatter = logging.Formatter(
     fmt='%(asctime)s.%(msecs)03d │ %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 web_formatter = logging.Formatter(
-    fmt='%(asctime)s.%(msecs)03d │ %(message)s', datefmt='%H:%M:%S')
+    fmt='%(asctime)s.%(msecs)03d │ %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 # 添加控制台日志处理器
 # console = logging.StreamHandler(stream=sys.stdout)
