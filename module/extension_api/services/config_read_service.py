@@ -1,5 +1,7 @@
 """实例配置值与配置结构的只读投影服务。"""
 
+import hashlib
+import json
 from datetime import date, datetime, time
 from typing import Any
 
@@ -38,6 +40,17 @@ def json_safe(value: Any) -> Any:
     return str(value)
 
 
+def config_revision(config: dict[str, Any]) -> str:
+    """为标准化配置生成不暴露原值的稳定并发版本。"""
+    payload = json.dumps(
+        json_safe(config),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 class ConfigReadService:
     """从上游配置文档构建稳定且脱敏的 API 快照。"""
 
@@ -65,6 +78,7 @@ class ConfigReadService:
                 module=module,
                 values=json_safe(redacted.values),
                 redacted_paths=redacted.redacted_paths,
+                revision=config_revision(config),
             )
         except InstanceNotFoundError:
             raise

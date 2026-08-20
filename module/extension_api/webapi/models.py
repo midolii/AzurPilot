@@ -64,6 +64,17 @@ class ConfigResponse(ApiModel):
     module: str
     values: dict[str, Any]
     redacted_paths: list[str]
+    revision: str
+
+
+class ConfigChangeRequest(ApiModel):
+    path: str = Field(min_length=1, max_length=240)
+    value: Any
+
+
+class ConfigPatchRequest(ApiModel):
+    expected_revision: str = Field(min_length=64, max_length=64)
+    changes: list[ConfigChangeRequest] = Field(min_length=1, max_length=100)
 
 
 class ConfigOptionResponse(ApiModel):
@@ -127,6 +138,20 @@ class TaskListResponse(ApiModel):
     pending: list[TaskResponse]
     waiting: list[TaskResponse]
     disabled: list[TaskResponse]
+
+
+class InstanceActionResponse(ApiModel):
+    action: str
+    changed: bool
+    instance: InstanceResponse
+
+
+class TaskActionResponse(ApiModel):
+    instance: str
+    task: str
+    action: str
+    scheduled_at: datetime
+    scheduler_running: bool
 
 
 class LogLineResponse(ApiModel):

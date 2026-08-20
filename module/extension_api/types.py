@@ -23,6 +23,15 @@ class ConfigSnapshot:
     module: str
     values: dict[str, Any]
     redacted_paths: tuple[str, ...]
+    revision: str
+
+
+@dataclass(frozen=True)
+class ConfigChange:
+    """一个经过传输层解析的配置路径变更。"""
+
+    path: str
+    value: Any
 
 
 @dataclass(frozen=True)
@@ -110,6 +119,26 @@ class TaskListSnapshot:
     pending: tuple[TaskSnapshot, ...]
     waiting: tuple[TaskSnapshot, ...]
     disabled: tuple[TaskSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class InstanceActionSnapshot:
+    """实例生命周期操作及其操作后状态。"""
+
+    action: str
+    changed: bool
+    instance: InstanceSnapshot
+
+
+@dataclass(frozen=True)
+class TaskActionSnapshot:
+    """任务立即运行操作的稳定结果。"""
+
+    instance: str
+    task: str
+    action: str
+    scheduled_at: datetime
+    scheduler_running: bool
 
 
 @dataclass(frozen=True)

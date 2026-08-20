@@ -5,7 +5,7 @@ import platform
 import subprocess
 import sys
 from datetime import datetime
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,6 @@ from module.config.utils import (
 )
 from module.submodule.utils import get_config_mod, get_mod_dir
 from module.webui.process_manager import ProcessManager
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,7 +43,7 @@ def _read_core_commit() -> str:
     return commit if result.returncode == 0 and commit else "unknown"
 
 
-@lru_cache(maxsize=None)
+@cache
 def _get_config_updater_class(module: str) -> type:
     """按实例模块定位不会构造运行时配置对象的更新器。"""
     if module == "alas":
@@ -89,6 +88,23 @@ class CoreFacade:
         if not isinstance(data, dict):
             raise TypeError("实例配置不是对象")
         return data
+
+    def write_instance_config(self, instance: str, data: dict[str, Any]) -> None:
+        """通过实例对应的上游 ConfigUpdater 原子写入配置文件。"""
+        updater = self.get_config_updater(instance)
+        updater.write_file(instance, data, self.get_instance_module(instance))
+
+    def start_instance(self, instance: str) -> None:
+        """复用原版 WebUI 的调度器启动语义。"""
+        self.require_instance(instance)
+        from module.webui.updater import updater
+
+        self.get_instance_manager(instance).start(None, updater.event)
+
+    def stop_instance(self, instance: str) -> bool:
+        """复用原版 WebUI 的 worker 进程树停止逻辑。"""
+        self.require_instance(instance)
+        return bool(self.get_instance_manager(instance).stop())
 
     def _read_instance_document(
         self, instance: str, filename: str, language: str | None = None

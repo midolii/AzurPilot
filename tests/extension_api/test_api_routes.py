@@ -7,6 +7,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from module.extension_api.errors import (
+    ConfigRevisionConflictError,
     DataReadError,
     InstanceNotFoundError,
     InvalidLanguageError,
@@ -20,8 +21,11 @@ from module.extension_api.types import (
     ConfigSchemaSnapshot,
     ConfigSnapshot,
     ConfigTaskSnapshot,
+    InstanceActionSnapshot,
+    InstanceSnapshot,
     LogLineSnapshot,
     LogTailSnapshot,
+    TaskActionSnapshot,
     TaskListSnapshot,
     TaskSnapshot,
 )
@@ -65,6 +69,7 @@ class FakeConfigReadService:
             module="alas",
             values={"Alas": {"Error": {"LlmApiKey": None}}},
             redacted_paths=("Alas.Error.LlmApiKey",),
+            revision="a" * 64,
         )
 
     def get_schema(self, instance, language=None):
@@ -148,6 +153,49 @@ class FakeLogReadService:
         )
 
 
+class FakeConfigMutationService:
+    def patch(self, instance, expected_revision, changes):
+        if expected_revision == "b" * 64:
+            raise ConfigRevisionConflictError
+        return ConfigSnapshot(
+            instance=instance,
+            module="alas",
+            values={changes[0].path: changes[0].value},
+            redacted_paths=(),
+            revision="c" * 64,
+        )
+
+    def run_task_now(self, instance, task):
+        return TaskActionSnapshot(
+            instance=instance,
+            task=task,
+            action="runNow",
+            scheduled_at=datetime(2026, 8, 20, 12, 0),  # noqa: DTZ001
+            scheduler_running=True,
+        )
+
+
+class FakeInstanceControlService:
+    def start(self, instance):
+        return self._result(instance, "start", True)
+
+    def stop(self, instance):
+        return self._result(instance, "stop", False)
+
+    @staticmethod
+    def _result(instance, action, running):
+        return InstanceActionSnapshot(
+            action=action,
+            changed=True,
+            instance=InstanceSnapshot(
+                name=instance,
+                module="alas",
+                running=running,
+                state="running" if running else "inactive",
+            ),
+        )
+
+
 class TestApiRoutes(unittest.TestCase):
     def setUp(self):
         facade = FakeFacade()
@@ -155,6 +203,8 @@ class TestApiRoutes(unittest.TestCase):
             facade=facade,
             instance_service=InstanceService(facade),
             config_read_service=FakeConfigReadService(),
+            config_mutation_service=FakeConfigMutationService(),
+            instance_control_service=FakeInstanceControlService(),
             task_read_service=FakeTaskReadService(),
             log_read_service=FakeLogReadService(),
         )
@@ -166,7 +216,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.2.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.3.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -179,7 +229,10 @@ class TestApiRoutes(unittest.TestCase):
                 "instances",
                 "instanceConfig",
                 "instanceConfigSchema",
+                "instanceConfigWrite",
+                "instanceLifecycle",
                 "instanceTasks",
+                "instanceTaskRunNow",
                 "instanceLogs",
                 "instanceLiveScreenshot",
             ],
@@ -249,6 +302,56 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(
             ["Alas.Error.LlmApiKey"], response.json()["redactedPaths"]
         )
+        self.assertEqual("a" * 64, response.json()["revision"])
+
+    def test_patch_instance_config(self):
+        response = self.client.patch(
+            "/api/v1/instances/alas/config",
+            json={
+                "expectedRevision": "a" * 64,
+                "changes": [{"path": "Main.Campaign.Name", "value": "13-4"}],
+            },
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("13-4", response.json()["values"]["Main.Campaign.Name"])
+        self.assertEqual("c" * 64, response.json()["revision"])
+
+    def test_patch_instance_config_rejects_invalid_body_and_stale_revision(self):
+        invalid = self.client.patch(
+            "/api/v1/instances/alas/config", json={"changes": []}
+        )
+        stale = self.client.patch(
+            "/api/v1/instances/alas/config",
+            json={
+                "expectedRevision": "b" * 64,
+                "changes": [{"path": "Main.Campaign.Name", "value": "13-4"}],
+            },
+        )
+
+        self.assertEqual(400, invalid.status_code)
+        self.assertEqual("invalid_request", invalid.json()["error"]["code"])
+        self.assertEqual(409, stale.status_code)
+        self.assertEqual("config_revision_conflict", stale.json()["error"]["code"])
+
+    def test_start_and_stop_instance(self):
+        started = self.client.post("/api/v1/instances/alas/start")
+        stopped = self.client.post("/api/v1/instances/alas/stop")
+
+        self.assertEqual(200, started.status_code)
+        self.assertTrue(started.json()["instance"]["running"])
+        self.assertEqual("start", started.json()["action"])
+        self.assertEqual(200, stopped.status_code)
+        self.assertFalse(stopped.json()["instance"]["running"])
+
+    def test_run_task_now(self):
+        response = self.client.post(
+            "/api/v1/instances/alas/tasks/Main/run-now"
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("runNow", response.json()["action"])
+        self.assertEqual("2026-08-20T12:00:00", response.json()["scheduledAt"])
 
     def test_get_instance_config_schema(self):
         response = self.client.get(
