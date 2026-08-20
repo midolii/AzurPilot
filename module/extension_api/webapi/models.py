@@ -169,6 +169,24 @@ class LogTailResponse(ApiModel):
     entries: list[LogLineResponse] = Field(default_factory=list)
 
 
+class CoreCommitResponse(ApiModel):
+    sha1: str
+    author: str
+    committed_at: str
+    message: str
+
+
+class CoreUpdateResponse(ApiModel):
+    status: str
+    available: bool
+    enabled: bool
+    source_repository: str
+    source_branch: str
+    local_commit: CoreCommitResponse | None
+    upstream_commit: CoreCommitResponse | None
+    history: list[CoreCommitResponse]
+
+
 class ErrorDetail(ApiModel):
     code: str
     message: str

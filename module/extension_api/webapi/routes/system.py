@@ -30,6 +30,7 @@ async def system(request: Request) -> JSONResponse:
                 "instanceTaskRunNow",
                 "instanceLogs",
                 "instanceLiveScreenshot",
+                "coreUpdate",
             ],
         )
     )

@@ -79,3 +79,11 @@ class DataWriteError(RuntimeError):
     def __init__(self, resource: str) -> None:
         self.resource = resource
         super().__init__("实例数据写入失败")
+
+
+class CoreUpdateUnavailableError(RuntimeError):
+    """当前状态不允许启动核心更新。"""
+
+
+class CoreUpdateBusyError(RuntimeError):
+    """已有核心更新操作正在运行。"""

@@ -21,6 +21,8 @@ from module.extension_api.types import (
     ConfigSchemaSnapshot,
     ConfigSnapshot,
     ConfigTaskSnapshot,
+    CoreCommitSnapshot,
+    CoreUpdateSnapshot,
     InstanceActionSnapshot,
     InstanceSnapshot,
     LogLineSnapshot,
@@ -196,6 +198,40 @@ class FakeInstanceControlService:
         )
 
 
+class FakeCoreUpdateService:
+    def __init__(self):
+        self.status = "updateAvailable"
+
+    def get(self):
+        return self._snapshot()
+
+    def check(self):
+        self.status = "checking"
+        return self._snapshot()
+
+    def apply(self):
+        self.status = "starting"
+        return self._snapshot()
+
+    def _snapshot(self):
+        commit = CoreCommitSnapshot(
+            sha1="b6501dff9",
+            author="midolii",
+            committed_at="2026-08-20 12:00:00 +0800",
+            message="feat(api): 增加配置与实例操作接口",
+        )
+        return CoreUpdateSnapshot(
+            status=self.status,
+            available=self.status == "updateAvailable",
+            enabled=True,
+            source_repository="git@github.com:midolii/AzurPilot.git",
+            source_branch="api-main",
+            local_commit=commit,
+            upstream_commit=commit,
+            history=(commit,),
+        )
+
+
 class TestApiRoutes(unittest.TestCase):
     def setUp(self):
         facade = FakeFacade()
@@ -207,6 +243,7 @@ class TestApiRoutes(unittest.TestCase):
             instance_control_service=FakeInstanceControlService(),
             task_read_service=FakeTaskReadService(),
             log_read_service=FakeLogReadService(),
+            core_update_service=FakeCoreUpdateService(),
         )
         application = Starlette()
         application.mount("/api/v1", api)
@@ -216,7 +253,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.3.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.4.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -235,9 +272,22 @@ class TestApiRoutes(unittest.TestCase):
                 "instanceTaskRunNow",
                 "instanceLogs",
                 "instanceLiveScreenshot",
+                "coreUpdate",
             ],
             response.json()["capabilities"],
         )
+
+    def test_core_update_routes(self):
+        snapshot = self.client.get("/api/v1/updates/core")
+        checking = self.client.post("/api/v1/updates/core/check")
+        applying = self.client.post("/api/v1/updates/core/apply")
+
+        self.assertEqual(200, snapshot.status_code)
+        self.assertEqual("api-main", snapshot.json()["sourceBranch"])
+        self.assertEqual("b6501dff9", snapshot.json()["history"][0]["sha1"])
+        self.assertEqual("checking", checking.json()["status"])
+        self.assertEqual(202, applying.status_code)
+        self.assertEqual("starting", applying.json()["status"])
 
     def test_list_instances(self):
         response = self.client.get("/api/v1/instances")
@@ -268,9 +318,7 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual("running", response.json()["state"])
 
     def test_get_live_screenshot_stream(self):
-        response = self.client.get(
-            "/api/v1/instances/alas/live-screenshot"
-        )
+        response = self.client.get("/api/v1/instances/alas/live-screenshot")
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(
@@ -299,9 +347,7 @@ class TestApiRoutes(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertIsNone(response.json()["values"]["Alas"]["Error"]["LlmApiKey"])
-        self.assertEqual(
-            ["Alas.Error.LlmApiKey"], response.json()["redactedPaths"]
-        )
+        self.assertEqual(["Alas.Error.LlmApiKey"], response.json()["redactedPaths"])
         self.assertEqual("a" * 64, response.json()["revision"])
 
     def test_patch_instance_config(self):
@@ -345,22 +391,21 @@ class TestApiRoutes(unittest.TestCase):
         self.assertFalse(stopped.json()["instance"]["running"])
 
     def test_run_task_now(self):
-        response = self.client.post(
-            "/api/v1/instances/alas/tasks/Main/run-now"
-        )
+        response = self.client.post("/api/v1/instances/alas/tasks/Main/run-now")
 
         self.assertEqual(200, response.status_code)
         self.assertEqual("runNow", response.json()["action"])
         self.assertEqual("2026-08-20T12:00:00", response.json()["scheduledAt"])
 
     def test_get_instance_config_schema(self):
-        response = self.client.get(
-            "/api/v1/instances/alas/config/schema?lang=zh-CN"
-        )
+        response = self.client.get("/api/v1/instances/alas/config/schema?lang=zh-CN")
 
         self.assertEqual(200, response.status_code)
         self.assertEqual("zh-CN", response.json()["language"])
-        self.assertEqual("Main.Campaign.Name", response.json()["menus"][0]["tasks"][0]["groups"][0]["fields"][0]["key"])
+        self.assertEqual(
+            "Main.Campaign.Name",
+            response.json()["menus"][0]["tasks"][0]["groups"][0]["fields"][0]["key"],
+        )
 
     def test_get_instance_tasks(self):
         response = self.client.get("/api/v1/instances/alas/tasks")
@@ -378,12 +423,12 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(["line"], response.json()["lines"])
         self.assertEqual("memory", response.json()["source"])
         self.assertEqual("ansi", response.json()["format"])
-        self.assertEqual(1_777_000_000_123, response.json()["entries"][0]["timestampMs"])
+        self.assertEqual(
+            1_777_000_000_123, response.json()["entries"][0]["timestampMs"]
+        )
 
     def test_invalid_language_returns_stable_error(self):
-        response = self.client.get(
-            "/api/v1/instances/alas/config/schema?lang=invalid"
-        )
+        response = self.client.get("/api/v1/instances/alas/config/schema?lang=invalid")
 
         self.assertEqual(422, response.status_code)
         self.assertEqual("invalid_language", response.json()["error"]["code"])
@@ -413,14 +458,10 @@ class TestApiRoutes(unittest.TestCase):
             with self.subTest(path=path):
                 response = self.client.get(path)
                 self.assertEqual(404, response.status_code)
-                self.assertEqual(
-                    "instance_not_found", response.json()["error"]["code"]
-                )
+                self.assertEqual("instance_not_found", response.json()["error"]["code"])
 
     def test_instance_data_routes_use_threadpool(self):
-        async_mock = AsyncMock(
-            side_effect=lambda function, *args: function(*args)
-        )
+        async_mock = AsyncMock(side_effect=lambda function, *args: function(*args))
         with patch(
             "module.extension_api.webapi.routes.instance_data.run_in_threadpool",
             async_mock,

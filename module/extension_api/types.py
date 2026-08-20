@@ -160,3 +160,27 @@ class LogTailSnapshot:
     truncated: bool
     format: str = "plain"
     entries: tuple[LogLineSnapshot, ...] = ()
+
+
+@dataclass(frozen=True)
+class CoreCommitSnapshot:
+    """更新页展示的一条 Git 提交记录。"""
+
+    sha1: str
+    author: str
+    committed_at: str
+    message: str
+
+
+@dataclass(frozen=True)
+class CoreUpdateSnapshot:
+    """核心更新器在请求时刻的只读状态。"""
+
+    status: str
+    available: bool
+    enabled: bool
+    source_repository: str
+    source_branch: str
+    local_commit: CoreCommitSnapshot | None
+    upstream_commit: CoreCommitSnapshot | None
+    history: tuple[CoreCommitSnapshot, ...]

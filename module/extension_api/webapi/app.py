@@ -9,6 +9,8 @@ from module.extension_api.core_facade import CoreFacade
 from module.extension_api.errors import (
     ConfigRevisionConflictError,
     ConfigValidationError,
+    CoreUpdateBusyError,
+    CoreUpdateUnavailableError,
     DataReadError,
     DataWriteError,
     InstanceNotFoundError,
@@ -22,6 +24,7 @@ from module.extension_api.errors import (
 from module.extension_api.sensitive import SensitiveValuePolicy
 from module.extension_api.services.config_mutation_service import ConfigMutationService
 from module.extension_api.services.config_read_service import ConfigReadService
+from module.extension_api.services.core_update_service import CoreUpdateService
 from module.extension_api.services.instance_control_service import (
     InstanceControlService,
 )
@@ -30,6 +33,11 @@ from module.extension_api.services.log_read_service import LogReadService
 from module.extension_api.services.task_read_service import TaskReadService
 from module.extension_api.webapi.models import ErrorDetail, ErrorResponse
 from module.extension_api.webapi.responses import model_response
+from module.extension_api.webapi.routes.core_update import (
+    apply_core_update,
+    check_core_update,
+    get_core_update,
+)
 from module.extension_api.webapi.routes.instance_data import (
     get_instance_config,
     get_instance_config_schema,
@@ -53,9 +61,7 @@ async def _instance_not_found(
     _request: Request, exc: InstanceNotFoundError
 ) -> JSONResponse:
     return model_response(
-        ErrorResponse(
-            error=ErrorDetail(code="instance_not_found", message=str(exc))
-        ),
+        ErrorResponse(error=ErrorDetail(code="instance_not_found", message=str(exc))),
         status_code=404,
     )
 
@@ -74,9 +80,7 @@ async def _invalid_language(
     )
 
 
-async def _invalid_query(
-    _request: Request, exc: InvalidQueryError
-) -> JSONResponse:
+async def _invalid_query(_request: Request, exc: InvalidQueryError) -> JSONResponse:
     return model_response(
         ErrorResponse(
             error=ErrorDetail(
@@ -88,9 +92,7 @@ async def _invalid_query(
     )
 
 
-async def _data_read_failed(
-    _request: Request, _exc: DataReadError
-) -> JSONResponse:
+async def _data_read_failed(_request: Request, _exc: DataReadError) -> JSONResponse:
     return model_response(
         ErrorResponse(
             error=ErrorDetail(
@@ -102,13 +104,9 @@ async def _data_read_failed(
     )
 
 
-async def _invalid_request(
-    _request: Request, exc: InvalidRequestError
-) -> JSONResponse:
+async def _invalid_request(_request: Request, exc: InvalidRequestError) -> JSONResponse:
     return model_response(
-        ErrorResponse(
-            error=ErrorDetail(code="invalid_request", message=str(exc))
-        ),
+        ErrorResponse(error=ErrorDetail(code="invalid_request", message=str(exc))),
         status_code=400,
     )
 
@@ -138,18 +136,14 @@ async def _config_revision_conflict(
     )
 
 
-async def _task_not_found(
-    _request: Request, exc: TaskNotFoundError
-) -> JSONResponse:
+async def _task_not_found(_request: Request, exc: TaskNotFoundError) -> JSONResponse:
     return model_response(
         ErrorResponse(error=ErrorDetail(code="task_not_found", message=str(exc))),
         status_code=404,
     )
 
 
-async def _task_disabled(
-    _request: Request, exc: TaskDisabledError
-) -> JSONResponse:
+async def _task_disabled(_request: Request, exc: TaskDisabledError) -> JSONResponse:
     return model_response(
         ErrorResponse(error=ErrorDetail(code="task_disabled", message=str(exc))),
         status_code=409,
@@ -170,9 +164,7 @@ async def _instance_operation_failed(
     )
 
 
-async def _data_write_failed(
-    _request: Request, _exc: DataWriteError
-) -> JSONResponse:
+async def _data_write_failed(_request: Request, _exc: DataWriteError) -> JSONResponse:
     return model_response(
         ErrorResponse(
             error=ErrorDetail(
@@ -184,6 +176,26 @@ async def _data_write_failed(
     )
 
 
+async def _core_update_unavailable(
+    _request: Request, exc: CoreUpdateUnavailableError
+) -> JSONResponse:
+    return model_response(
+        ErrorResponse(
+            error=ErrorDetail(code="core_update_unavailable", message=str(exc))
+        ),
+        status_code=409,
+    )
+
+
+async def _core_update_busy(
+    _request: Request, exc: CoreUpdateBusyError
+) -> JSONResponse:
+    return model_response(
+        ErrorResponse(error=ErrorDetail(code="core_update_busy", message=str(exc))),
+        status_code=409,
+    )
+
+
 def create_api_app(
     facade: CoreFacade | None = None,
     instance_service: InstanceService | None = None,
@@ -192,6 +204,7 @@ def create_api_app(
     instance_control_service: InstanceControlService | None = None,
     task_read_service: TaskReadService | None = None,
     log_read_service: LogReadService | None = None,
+    core_update_service: CoreUpdateService | None = None,
 ) -> Starlette:
     """创建挂载在 ``/api/v1`` 下的无状态传输层。"""
     facade = facade or CoreFacade()
@@ -208,10 +221,14 @@ def create_api_app(
     )
     task_read_service = task_read_service or TaskReadService(facade)
     log_read_service = log_read_service or LogReadService(facade, sensitive_policy)
+    core_update_service = core_update_service or CoreUpdateService()
     application = Starlette(
         routes=[
             Route("/health", health, methods=["GET"]),
             Route("/system", system, methods=["GET"]),
+            Route("/updates/core", get_core_update, methods=["GET"]),
+            Route("/updates/core/check", check_core_update, methods=["POST"]),
+            Route("/updates/core/apply", apply_core_update, methods=["POST"]),
             Route("/instances", list_instances, methods=["GET"]),
             Route(
                 "/instances/{instance:str}/config/schema",
@@ -272,6 +289,8 @@ def create_api_app(
             TaskDisabledError: _task_disabled,
             InstanceOperationError: _instance_operation_failed,
             DataWriteError: _data_write_failed,
+            CoreUpdateUnavailableError: _core_update_unavailable,
+            CoreUpdateBusyError: _core_update_busy,
         },
     )
     application.state.core_facade = facade
@@ -281,4 +300,5 @@ def create_api_app(
     application.state.instance_control_service = instance_control_service
     application.state.task_read_service = task_read_service
     application.state.log_read_service = log_read_service
+    application.state.core_update_service = core_update_service
     return application
