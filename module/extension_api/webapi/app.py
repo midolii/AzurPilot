@@ -42,6 +42,7 @@ from module.extension_api.webapi.routes.instance_data import (
     get_instance_config,
     get_instance_config_schema,
     get_instance_logs,
+    get_instance_logs_stream,
     get_instance_tasks,
 )
 from module.extension_api.webapi.routes.instance_mutations import (
@@ -264,6 +265,11 @@ def create_api_app(
                 "/instances/{instance:str}/stop",
                 stop_instance,
                 methods=["POST"],
+            ),
+            Route(
+                "/instances/{instance:str}/logs/stream",
+                get_instance_logs_stream,
+                methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/logs",

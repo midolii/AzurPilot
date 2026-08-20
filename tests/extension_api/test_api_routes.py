@@ -32,6 +32,8 @@ from module.extension_api.types import (
     TaskSnapshot,
 )
 from module.extension_api.webapi import create_api_app
+from module.extension_api.webapi.models import LogTailResponse
+from module.extension_api.webapi.routes.instance_data import _serialize_log_event
 
 
 class FakeFacade:
@@ -253,7 +255,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.4.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.5.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -271,6 +273,7 @@ class TestApiRoutes(unittest.TestCase):
                 "instanceTasks",
                 "instanceTaskRunNow",
                 "instanceLogs",
+                "instanceLogStream",
                 "instanceLiveScreenshot",
                 "coreUpdate",
             ],
@@ -427,6 +430,17 @@ class TestApiRoutes(unittest.TestCase):
             1_777_000_000_123, response.json()["entries"][0]["timestampMs"]
         )
 
+    def test_serialize_instance_log_stream_event(self):
+        snapshot = FakeLogReadService().get("alas", limit=20, output_format="ansi")
+        event = _serialize_log_event(
+            LogTailResponse.model_validate(snapshot), retry=2_000
+        )
+
+        self.assertTrue(event.startswith("retry: 2000\nevent: logs\ndata: "))
+        self.assertIn('"timestampMs":1777000000123', event)
+        self.assertIn('"format":"ansi"', event)
+        self.assertTrue(event.endswith("\n\n"))
+
     def test_invalid_language_returns_stable_error(self):
         response = self.client.get("/api/v1/instances/alas/config/schema?lang=invalid")
 
@@ -435,9 +449,14 @@ class TestApiRoutes(unittest.TestCase):
 
     def test_invalid_query_returns_stable_error(self):
         response = self.client.get("/api/v1/instances/alas/logs?limit=bad")
+        stream_response = self.client.get(
+            "/api/v1/instances/alas/logs/stream?limit=bad"
+        )
 
         self.assertEqual(422, response.status_code)
         self.assertEqual("invalid_query", response.json()["error"]["code"])
+        self.assertEqual(422, stream_response.status_code)
+        self.assertEqual("invalid_query", stream_response.json()["error"]["code"])
 
     def test_data_read_error_does_not_expose_details(self):
         response = self.client.get("/api/v1/instances/broken/config")
@@ -452,6 +471,7 @@ class TestApiRoutes(unittest.TestCase):
             "/api/v1/instances/missing/config/schema",
             "/api/v1/instances/missing/tasks",
             "/api/v1/instances/missing/logs",
+            "/api/v1/instances/missing/logs/stream",
             "/api/v1/instances/missing/live-screenshot",
         )
         for path in paths:
