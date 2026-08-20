@@ -44,6 +44,7 @@ from module.extension_api.webapi.routes.instance_data import (
     get_instance_logs,
     get_instance_logs_stream,
     get_instance_tasks,
+    get_instance_tasks_stream,
 )
 from module.extension_api.webapi.routes.instance_mutations import (
     patch_instance_config,
@@ -51,7 +52,11 @@ from module.extension_api.webapi.routes.instance_mutations import (
     start_instance,
     stop_instance,
 )
-from module.extension_api.webapi.routes.instances import get_instance, list_instances
+from module.extension_api.webapi.routes.instances import (
+    get_instance,
+    list_instances,
+    stream_instances,
+)
 from module.extension_api.webapi.routes.live_screenshot import (
     get_live_screenshot_stream,
 )
@@ -230,6 +235,7 @@ def create_api_app(
             Route("/updates/core", get_core_update, methods=["GET"]),
             Route("/updates/core/check", check_core_update, methods=["POST"]),
             Route("/updates/core/apply", apply_core_update, methods=["POST"]),
+            Route("/instances/stream", stream_instances, methods=["GET"]),
             Route("/instances", list_instances, methods=["GET"]),
             Route(
                 "/instances/{instance:str}/config/schema",
@@ -245,6 +251,11 @@ def create_api_app(
                 "/instances/{instance:str}/config",
                 patch_instance_config,
                 methods=["PATCH"],
+            ),
+            Route(
+                "/instances/{instance:str}/tasks/stream",
+                get_instance_tasks_stream,
+                methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/tasks",

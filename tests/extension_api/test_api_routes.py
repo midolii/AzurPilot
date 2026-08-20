@@ -32,8 +32,17 @@ from module.extension_api.types import (
     TaskSnapshot,
 )
 from module.extension_api.webapi import create_api_app
-from module.extension_api.webapi.models import LogTailResponse
-from module.extension_api.webapi.routes.instance_data import _serialize_log_event
+from module.extension_api.webapi.models import (
+    InstanceListResponse,
+    InstanceResponse,
+    LogTailResponse,
+    TaskListResponse,
+)
+from module.extension_api.webapi.routes.instance_data import (
+    _serialize_log_event,
+    _serialize_task_event,
+)
+from module.extension_api.webapi.routes.instances import _serialize_instance_event
 
 
 class FakeFacade:
@@ -255,7 +264,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.5.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.6.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -266,11 +275,13 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(
             [
                 "instances",
+                "instanceStream",
                 "instanceConfig",
                 "instanceConfigSchema",
                 "instanceConfigWrite",
                 "instanceLifecycle",
                 "instanceTasks",
+                "instanceTaskStream",
                 "instanceTaskRunNow",
                 "instanceLogs",
                 "instanceLogStream",
@@ -441,6 +452,27 @@ class TestApiRoutes(unittest.TestCase):
         self.assertIn('"format":"ansi"', event)
         self.assertTrue(event.endswith("\n\n"))
 
+    def test_serialize_task_stream_event(self):
+        snapshot = FakeTaskReadService().get("alas")
+        event = _serialize_task_event(
+            TaskListResponse.model_validate(snapshot), retry=1_000
+        )
+
+        self.assertTrue(event.startswith("retry: 1000\nevent: tasks\ndata: "))
+        self.assertIn('"instance":"alas"', event)
+        self.assertIn('"state":"running"', event)
+
+    def test_serialize_instance_stream_event(self):
+        snapshots = InstanceService(FakeFacade()).list()
+        response = InstanceListResponse(
+            items=[InstanceResponse.model_validate(snapshot) for snapshot in snapshots]
+        )
+        event = _serialize_instance_event(response, retry=1_000)
+
+        self.assertTrue(event.startswith("retry: 1000\nevent: instances\ndata: "))
+        self.assertIn('"name":"alas"', event)
+        self.assertIn('"running":true', event)
+
     def test_invalid_language_returns_stable_error(self):
         response = self.client.get("/api/v1/instances/alas/config/schema?lang=invalid")
 
@@ -470,6 +502,7 @@ class TestApiRoutes(unittest.TestCase):
             "/api/v1/instances/missing/config",
             "/api/v1/instances/missing/config/schema",
             "/api/v1/instances/missing/tasks",
+            "/api/v1/instances/missing/tasks/stream",
             "/api/v1/instances/missing/logs",
             "/api/v1/instances/missing/logs/stream",
             "/api/v1/instances/missing/live-screenshot",

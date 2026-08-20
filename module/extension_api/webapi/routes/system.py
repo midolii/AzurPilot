@@ -22,11 +22,13 @@ async def system(request: Request) -> JSONResponse:
             platform=facade.get_platform(),
             capabilities=[
                 "instances",
+                "instanceStream",
                 "instanceConfig",
                 "instanceConfigSchema",
                 "instanceConfigWrite",
                 "instanceLifecycle",
                 "instanceTasks",
+                "instanceTaskStream",
                 "instanceTaskRunNow",
                 "instanceLogs",
                 "instanceLogStream",
