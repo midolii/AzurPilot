@@ -71,10 +71,19 @@ def _ensure_table():
                 merit INTEGER,
                 guild_coin INTEGER,
                 action_point INTEGER,
+                action_point_total INTEGER,
                 yellow_coin INTEGER,
                 purple_coin INTEGER
             )
         ''')
+        columns = {
+            row[1]
+            for row in conn.execute('PRAGMA table_info(resource_snapshots)').fetchall()
+        }
+        if 'action_point_total' not in columns:
+            conn.execute(
+                'ALTER TABLE resource_snapshots ADD COLUMN action_point_total INTEGER'
+            )
         conn.execute('CREATE INDEX IF NOT EXISTS idx_res_snap_instance ON resource_snapshots(instance)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_res_snap_ts ON resource_snapshots(instance, ts)')
         conn.commit()
@@ -112,6 +121,7 @@ def record_resource_snapshot(instance: str, resources: Dict[str, Any]) -> bool:
             'merit': resources.get('Merit'),
             'guild_coin': resources.get('GuildCoin'),
             'action_point': resources.get('ActionPoint'),
+            'action_point_total': resources.get('ActionPointTotal'),
             'yellow_coin': resources.get('YellowCoin'),
             'purple_coin': resources.get('PurpleCoin'),
         }
@@ -123,12 +133,12 @@ def record_resource_snapshot(instance: str, resources: Dict[str, Any]) -> bool:
                         instance, ts,
                         oil, coin, gem, pt, cube,
                         core, medal, merit, guild_coin,
-                        action_point, yellow_coin, purple_coin
+                        action_point, action_point_total, yellow_coin, purple_coin
                     ) VALUES (
                         :instance, :ts,
                         :oil, :coin, :gem, :pt, :cube,
                         :core, :medal, :merit, :guild_coin,
-                        :action_point, :yellow_coin, :purple_coin
+                        :action_point, :action_point_total, :yellow_coin, :purple_coin
                     )
                 ''', row)
                 conn.commit()
@@ -152,7 +162,8 @@ def get_resource_timeline(
         list[dict]: 按时间排序的快照列表，每个包含:
             - ts: ISO 格式时间戳
             - oil, coin, gem, pt, cube, core, medal, merit, guild_coin,
-              action_point, yellow_coin, purple_coin: 资源数值（可能为 None）
+              action_point, action_point_total, yellow_coin, purple_coin:
+              资源数值（可能为 None）。行动力 total 包含三种体力箱。
     """
     try:
         _ensure_table()

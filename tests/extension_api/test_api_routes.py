@@ -16,9 +16,12 @@ from module.extension_api.errors import (
 from module.extension_api.services.instance_service import InstanceService
 from module.extension_api.types import (
     CommissionPageSnapshot,
+    CommissionPeriodSummarySnapshot,
     CommissionRecordSnapshot,
     CommissionRetentionSnapshot,
     CommissionRewardSnapshot,
+    CommissionSummaryItemSnapshot,
+    CommissionSummarySnapshot,
     ConfigFieldSnapshot,
     ConfigGroupSnapshot,
     ConfigMenuSnapshot,
@@ -173,11 +176,13 @@ class FakeLogReadService:
 
 
 class FakeStatisticsReadService:
-    def get_resources(self, instance, limit=None):
+    def get_resources(self, instance, limit=None, period=None):
         if instance == "missing":
             raise InstanceNotFoundError(instance)
         if limit == "bad":
             raise InvalidQueryError("limit")
+        if period == "bad":
+            raise InvalidQueryError("period")
         point = ResourcePointSnapshot(
             timestamp_ms=1_777_000_000_123,
             oil=12_000,
@@ -189,15 +194,39 @@ class FakeStatisticsReadService:
             medal=30,
             merit=400,
             guild_coin=600,
-            action_point=180,
+            action_point=1380,
+            action_point_box=1200,
             yellow_coin=700,
             purple_coin=90,
         )
         return ResourceTimelineSnapshot(
             instance=instance,
+            period=period or "month",
             items=(point,),
             count=1,
+            total_count=1,
             limit=int(limit or 500),
+            sampled=False,
+            available_from_ms=point.timestamp_ms,
+            available_to_ms=point.timestamp_ms,
+        )
+
+    def get_commission_summary(self, instance):
+        if instance == "missing":
+            raise InstanceNotFoundError(instance)
+        item = CommissionSummaryItemSnapshot(
+            key="cube", total=4, count=2, average=2.0
+        )
+        return CommissionSummarySnapshot(
+            instance=instance,
+            periods=(
+                CommissionPeriodSummarySnapshot(
+                    period="day",
+                    starts_at_ms=1_777_000_000_000,
+                    total_commissions=4,
+                    items=(item,),
+                ),
+            ),
         )
 
     def get_commissions(self, instance, page=None, page_size=None):
@@ -326,7 +355,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.7.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.8.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -349,6 +378,7 @@ class TestApiRoutes(unittest.TestCase):
                 "instanceLogStream",
                 "instanceResourceStatistics",
                 "instanceCommissionHistory",
+                "instanceCommissionSummary",
                 "instanceLiveScreenshot",
                 "coreUpdate",
             ],
@@ -507,12 +537,17 @@ class TestApiRoutes(unittest.TestCase):
 
     def test_get_resource_statistics(self):
         response = self.client.get(
-            "/api/v1/instances/alas/statistics/resources?limit=200"
+            "/api/v1/instances/alas/statistics/resources?limit=200&period=week"
         )
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(200, response.json()["limit"])
+        self.assertEqual("week", response.json()["period"])
+        self.assertEqual(1, response.json()["totalCount"])
+        self.assertFalse(response.json()["sampled"])
         self.assertEqual(12_000, response.json()["items"][0]["oil"])
+        self.assertEqual(1380, response.json()["items"][0]["actionPoint"])
+        self.assertEqual(1200, response.json()["items"][0]["actionPointBox"])
         self.assertEqual(
             1_777_000_000_123, response.json()["items"][0]["timestampMs"]
         )
@@ -529,6 +564,16 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual("cube", response.json()["items"][0]["rewards"][0]["key"])
         self.assertEqual(5000, response.json()["retention"]["maxEntriesPerMonth"])
         self.assertFalse(response.json()["retention"]["automaticMonthCleanup"])
+
+    def test_get_commission_summary(self):
+        response = self.client.get(
+            "/api/v1/instances/alas/statistics/commissions/summary"
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("day", response.json()["periods"][0]["period"])
+        self.assertEqual(4, response.json()["periods"][0]["totalCommissions"])
+        self.assertEqual(2.0, response.json()["periods"][0]["items"][0]["average"])
 
     def test_serialize_instance_log_stream_event(self):
         snapshot = FakeLogReadService().get("alas", limit=20, output_format="ansi")
@@ -576,6 +621,9 @@ class TestApiRoutes(unittest.TestCase):
         resource_response = self.client.get(
             "/api/v1/instances/alas/statistics/resources?limit=bad"
         )
+        resource_period_response = self.client.get(
+            "/api/v1/instances/alas/statistics/resources?period=bad"
+        )
         commission_response = self.client.get(
             "/api/v1/instances/alas/statistics/commissions?page=bad"
         )
@@ -586,6 +634,10 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual("invalid_query", stream_response.json()["error"]["code"])
         self.assertEqual(422, resource_response.status_code)
         self.assertEqual("invalid_query", resource_response.json()["error"]["code"])
+        self.assertEqual(422, resource_period_response.status_code)
+        self.assertEqual(
+            "invalid_query", resource_period_response.json()["error"]["code"]
+        )
         self.assertEqual(422, commission_response.status_code)
         self.assertEqual("invalid_query", commission_response.json()["error"]["code"])
 
@@ -606,6 +658,7 @@ class TestApiRoutes(unittest.TestCase):
             "/api/v1/instances/missing/logs/stream",
             "/api/v1/instances/missing/statistics/resources",
             "/api/v1/instances/missing/statistics/commissions",
+            "/api/v1/instances/missing/statistics/commissions/summary",
             "/api/v1/instances/missing/live-screenshot",
         )
         for path in paths:

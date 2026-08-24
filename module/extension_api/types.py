@@ -164,7 +164,7 @@ class LogTailSnapshot:
 
 @dataclass(frozen=True)
 class ResourcePointSnapshot:
-    """一次资源采样，时间统一转换为毫秒级时间戳。"""
+    """一次资源采样；行动力为含体力箱总量，box 为其中体力箱贡献。"""
 
     timestamp_ms: int
     oil: int | None
@@ -177,6 +177,7 @@ class ResourcePointSnapshot:
     merit: int | None
     guild_coin: int | None
     action_point: int | None
+    action_point_box: int | None
     yellow_coin: int | None
     purple_coin: int | None
 
@@ -186,9 +187,14 @@ class ResourceTimelineSnapshot:
     """有界的实例资源趋势快照。"""
 
     instance: str
+    period: str
     items: tuple[ResourcePointSnapshot, ...]
     count: int
+    total_count: int
     limit: int
+    sampled: bool
+    available_from_ms: int | None
+    available_to_ms: int | None
 
 
 @dataclass(frozen=True)
@@ -230,6 +236,34 @@ class CommissionPageSnapshot:
     total: int
     total_pages: int
     retention: CommissionRetentionSnapshot
+
+
+@dataclass(frozen=True)
+class CommissionSummaryItemSnapshot:
+    """一个统计周期内的单项委托奖励汇总。"""
+
+    key: str
+    total: int
+    count: int
+    average: float
+
+
+@dataclass(frozen=True)
+class CommissionPeriodSummarySnapshot:
+    """今日、本周或本月的委托收益汇总。"""
+
+    period: str
+    starts_at_ms: int
+    total_commissions: int
+    items: tuple[CommissionSummaryItemSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class CommissionSummarySnapshot:
+    """供统计页一次读取的全部委托周期摘要。"""
+
+    instance: str
+    periods: tuple[CommissionPeriodSummarySnapshot, ...]
 
 
 @dataclass(frozen=True)

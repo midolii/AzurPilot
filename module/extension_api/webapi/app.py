@@ -63,6 +63,7 @@ from module.extension_api.webapi.routes.live_screenshot import (
 )
 from module.extension_api.webapi.routes.statistics import (
     get_commission_statistics,
+    get_commission_summary,
     get_resource_statistics,
 )
 from module.extension_api.webapi.routes.system import health, system
@@ -302,6 +303,11 @@ def create_api_app(
             Route(
                 "/instances/{instance:str}/statistics/commissions",
                 get_commission_statistics,
+                methods=["GET"],
+            ),
+            Route(
+                "/instances/{instance:str}/statistics/commissions/summary",
+                get_commission_summary,
                 methods=["GET"],
             ),
             Route(

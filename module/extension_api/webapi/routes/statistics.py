@@ -6,6 +6,7 @@ from starlette.responses import JSONResponse
 
 from module.extension_api.webapi.models import (
     CommissionPageResponse,
+    CommissionSummaryResponse,
     ResourceTimelineResponse,
 )
 from module.extension_api.webapi.responses import model_response
@@ -16,6 +17,7 @@ async def get_resource_statistics(request: Request) -> JSONResponse:
         request.app.state.statistics_read_service.get_resources,
         request.path_params["instance"],
         request.query_params.get("limit"),
+        request.query_params.get("period"),
     )
     return model_response(ResourceTimelineResponse.model_validate(snapshot))
 
@@ -28,3 +30,11 @@ async def get_commission_statistics(request: Request) -> JSONResponse:
         request.query_params.get("pageSize"),
     )
     return model_response(CommissionPageResponse.model_validate(snapshot))
+
+
+async def get_commission_summary(request: Request) -> JSONResponse:
+    snapshot = await run_in_threadpool(
+        request.app.state.statistics_read_service.get_commission_summary,
+        request.path_params["instance"],
+    )
+    return model_response(CommissionSummaryResponse.model_validate(snapshot))

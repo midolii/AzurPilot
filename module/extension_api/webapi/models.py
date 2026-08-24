@@ -181,15 +181,21 @@ class ResourcePointResponse(ApiModel):
     merit: int | None
     guild_coin: int | None
     action_point: int | None
+    action_point_box: int | None
     yellow_coin: int | None
     purple_coin: int | None
 
 
 class ResourceTimelineResponse(ApiModel):
     instance: str
+    period: str
     items: list[ResourcePointResponse]
     count: int
+    total_count: int
     limit: int
+    sampled: bool
+    available_from_ms: int | None
+    available_to_ms: int | None
 
 
 class CommissionRewardResponse(ApiModel):
@@ -219,6 +225,25 @@ class CommissionPageResponse(ApiModel):
     total: int
     total_pages: int
     retention: CommissionRetentionResponse
+
+
+class CommissionSummaryItemResponse(ApiModel):
+    key: str
+    total: int
+    count: int
+    average: float
+
+
+class CommissionPeriodSummaryResponse(ApiModel):
+    period: str
+    starts_at_ms: int
+    total_commissions: int
+    items: list[CommissionSummaryItemResponse]
+
+
+class CommissionSummaryResponse(ApiModel):
+    instance: str
+    periods: list[CommissionPeriodSummaryResponse]
 
 
 class CoreCommitResponse(ApiModel):

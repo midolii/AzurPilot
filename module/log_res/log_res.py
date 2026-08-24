@@ -115,6 +115,18 @@ class LogRes:
                         resources[group_name] = int(value)
                     except (TypeError, ValueError):
                         pass
+                if group_name == 'ActionPoint':
+                    total_key = 'Dashboard.ActionPoint.Total'
+                    if total_key in self.config.modified:
+                        total = self.config.modified[total_key]
+                    else:
+                        group_data = deep_get(self.config.data, 'Dashboard.ActionPoint')
+                        total = group_data.get('Total') if isinstance(group_data, dict) else None
+                    if total is not None:
+                        try:
+                            resources['ActionPointTotal'] = int(total)
+                        except (TypeError, ValueError):
+                            pass
             record_resource_snapshot(instance_name, resources)
         except Exception:
             logger.exception('[日志资源] 记录资源快照失败')
