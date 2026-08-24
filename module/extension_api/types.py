@@ -163,6 +163,76 @@ class LogTailSnapshot:
 
 
 @dataclass(frozen=True)
+class ResourcePointSnapshot:
+    """一次资源采样，时间统一转换为毫秒级时间戳。"""
+
+    timestamp_ms: int
+    oil: int | None
+    coin: int | None
+    gem: int | None
+    pt: int | None
+    cube: int | None
+    core: int | None
+    medal: int | None
+    merit: int | None
+    guild_coin: int | None
+    action_point: int | None
+    yellow_coin: int | None
+    purple_coin: int | None
+
+
+@dataclass(frozen=True)
+class ResourceTimelineSnapshot:
+    """有界的实例资源趋势快照。"""
+
+    instance: str
+    items: tuple[ResourcePointSnapshot, ...]
+    count: int
+    limit: int
+
+
+@dataclass(frozen=True)
+class CommissionRewardSnapshot:
+    """一条委托结算中的单项奖励。"""
+
+    key: str
+    amount: int
+
+
+@dataclass(frozen=True)
+class CommissionRecordSnapshot:
+    """一次委托结算记录。"""
+
+    timestamp_ms: int
+    commission_count: int
+    rewards: tuple[CommissionRewardSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class CommissionRetentionSnapshot:
+    """委托数据库的真实可查询范围和保留约束。"""
+
+    available_from_ms: int | None
+    available_to_ms: int | None
+    retained_months: int
+    max_entries_per_month: int
+    automatic_month_cleanup: bool
+
+
+@dataclass(frozen=True)
+class CommissionPageSnapshot:
+    """按时间倒序排列的服务端分页委托记录。"""
+
+    instance: str
+    items: tuple[CommissionRecordSnapshot, ...]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+    retention: CommissionRetentionSnapshot
+
+
+@dataclass(frozen=True)
 class CoreCommitSnapshot:
     """更新页展示的一条 Git 提交记录。"""
 

@@ -574,6 +574,20 @@ class Cl1Database:
             logger.error(f"[Statistics] 列出统计数据失败: {e}")
             return []
 
+    def get_commission_income_months(self, instance: str) -> List[str]:
+        """列出指定实例实际包含委托收益记录的月份。
+
+        月份数据没有自动清理策略；调用方可据此发现真实可查询范围，
+        而不必假设旧 WebUI 最近三个月的展示窗口就是数据保留期限。
+        """
+        months: List[str] = []
+        for _, month_key in self._list_stats_rows(instance=instance):
+            data = self.get_stats(instance, month_key)
+            entries = data.get("commission_income_entries")
+            if isinstance(entries, list) and entries:
+                months.append(month_key)
+        return months
+
     def backfill_meow_stats(
         self, instance: str, year: int = None, month: int = None
     ) -> bool:

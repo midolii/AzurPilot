@@ -169,6 +169,58 @@ class LogTailResponse(ApiModel):
     entries: list[LogLineResponse] = Field(default_factory=list)
 
 
+class ResourcePointResponse(ApiModel):
+    timestamp_ms: int
+    oil: int | None
+    coin: int | None
+    gem: int | None
+    pt: int | None
+    cube: int | None
+    core: int | None
+    medal: int | None
+    merit: int | None
+    guild_coin: int | None
+    action_point: int | None
+    yellow_coin: int | None
+    purple_coin: int | None
+
+
+class ResourceTimelineResponse(ApiModel):
+    instance: str
+    items: list[ResourcePointResponse]
+    count: int
+    limit: int
+
+
+class CommissionRewardResponse(ApiModel):
+    key: str
+    amount: int
+
+
+class CommissionRecordResponse(ApiModel):
+    timestamp_ms: int
+    commission_count: int
+    rewards: list[CommissionRewardResponse]
+
+
+class CommissionRetentionResponse(ApiModel):
+    available_from_ms: int | None
+    available_to_ms: int | None
+    retained_months: int
+    max_entries_per_month: int
+    automatic_month_cleanup: bool
+
+
+class CommissionPageResponse(ApiModel):
+    instance: str
+    items: list[CommissionRecordResponse]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+    retention: CommissionRetentionResponse
+
+
 class CoreCommitResponse(ApiModel):
     sha1: str
     author: str

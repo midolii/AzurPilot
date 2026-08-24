@@ -30,6 +30,7 @@ from module.extension_api.services.instance_control_service import (
 )
 from module.extension_api.services.instance_service import InstanceService
 from module.extension_api.services.log_read_service import LogReadService
+from module.extension_api.services.statistics_read_service import StatisticsReadService
 from module.extension_api.services.task_read_service import TaskReadService
 from module.extension_api.webapi.models import ErrorDetail, ErrorResponse
 from module.extension_api.webapi.responses import model_response
@@ -59,6 +60,10 @@ from module.extension_api.webapi.routes.instances import (
 )
 from module.extension_api.webapi.routes.live_screenshot import (
     get_live_screenshot_stream,
+)
+from module.extension_api.webapi.routes.statistics import (
+    get_commission_statistics,
+    get_resource_statistics,
 )
 from module.extension_api.webapi.routes.system import health, system
 
@@ -210,6 +215,7 @@ def create_api_app(
     instance_control_service: InstanceControlService | None = None,
     task_read_service: TaskReadService | None = None,
     log_read_service: LogReadService | None = None,
+    statistics_read_service: StatisticsReadService | None = None,
     core_update_service: CoreUpdateService | None = None,
 ) -> Starlette:
     """创建挂载在 ``/api/v1`` 下的无状态传输层。"""
@@ -227,6 +233,7 @@ def create_api_app(
     )
     task_read_service = task_read_service or TaskReadService(facade)
     log_read_service = log_read_service or LogReadService(facade, sensitive_policy)
+    statistics_read_service = statistics_read_service or StatisticsReadService(facade)
     core_update_service = core_update_service or CoreUpdateService()
     application = Starlette(
         routes=[
@@ -288,6 +295,16 @@ def create_api_app(
                 methods=["GET"],
             ),
             Route(
+                "/instances/{instance:str}/statistics/resources",
+                get_resource_statistics,
+                methods=["GET"],
+            ),
+            Route(
+                "/instances/{instance:str}/statistics/commissions",
+                get_commission_statistics,
+                methods=["GET"],
+            ),
+            Route(
                 "/instances/{instance:str}/live-screenshot",
                 get_live_screenshot_stream,
                 methods=["GET"],
@@ -317,5 +334,6 @@ def create_api_app(
     application.state.instance_control_service = instance_control_service
     application.state.task_read_service = task_read_service
     application.state.log_read_service = log_read_service
+    application.state.statistics_read_service = statistics_read_service
     application.state.core_update_service = core_update_service
     return application

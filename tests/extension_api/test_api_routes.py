@@ -15,6 +15,10 @@ from module.extension_api.errors import (
 )
 from module.extension_api.services.instance_service import InstanceService
 from module.extension_api.types import (
+    CommissionPageSnapshot,
+    CommissionRecordSnapshot,
+    CommissionRetentionSnapshot,
+    CommissionRewardSnapshot,
     ConfigFieldSnapshot,
     ConfigGroupSnapshot,
     ConfigMenuSnapshot,
@@ -27,6 +31,8 @@ from module.extension_api.types import (
     InstanceSnapshot,
     LogLineSnapshot,
     LogTailSnapshot,
+    ResourcePointSnapshot,
+    ResourceTimelineSnapshot,
     TaskActionSnapshot,
     TaskListSnapshot,
     TaskSnapshot,
@@ -166,6 +172,61 @@ class FakeLogReadService:
         )
 
 
+class FakeStatisticsReadService:
+    def get_resources(self, instance, limit=None):
+        if instance == "missing":
+            raise InstanceNotFoundError(instance)
+        if limit == "bad":
+            raise InvalidQueryError("limit")
+        point = ResourcePointSnapshot(
+            timestamp_ms=1_777_000_000_123,
+            oil=12_000,
+            coin=34_000,
+            gem=500,
+            pt=1200,
+            cube=80,
+            core=200,
+            medal=30,
+            merit=400,
+            guild_coin=600,
+            action_point=180,
+            yellow_coin=700,
+            purple_coin=90,
+        )
+        return ResourceTimelineSnapshot(
+            instance=instance,
+            items=(point,),
+            count=1,
+            limit=int(limit or 500),
+        )
+
+    def get_commissions(self, instance, page=None, page_size=None):
+        if instance == "missing":
+            raise InstanceNotFoundError(instance)
+        if page == "bad":
+            raise InvalidQueryError("page")
+        record = CommissionRecordSnapshot(
+            timestamp_ms=1_777_000_000_123,
+            commission_count=4,
+            rewards=(CommissionRewardSnapshot(key="cube", amount=2),),
+        )
+        return CommissionPageSnapshot(
+            instance=instance,
+            items=(record,),
+            page=int(page or 1),
+            page_size=int(page_size or 20),
+            total=1,
+            total_pages=1,
+            retention=CommissionRetentionSnapshot(
+                available_from_ms=record.timestamp_ms,
+                available_to_ms=record.timestamp_ms,
+                retained_months=1,
+                max_entries_per_month=5000,
+                automatic_month_cleanup=False,
+            ),
+        )
+
+
 class FakeConfigMutationService:
     def patch(self, instance, expected_revision, changes):
         if expected_revision == "b" * 64:
@@ -254,6 +315,7 @@ class TestApiRoutes(unittest.TestCase):
             instance_control_service=FakeInstanceControlService(),
             task_read_service=FakeTaskReadService(),
             log_read_service=FakeLogReadService(),
+            statistics_read_service=FakeStatisticsReadService(),
             core_update_service=FakeCoreUpdateService(),
         )
         application = Starlette()
@@ -264,7 +326,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.6.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.7.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -285,6 +347,8 @@ class TestApiRoutes(unittest.TestCase):
                 "instanceTaskRunNow",
                 "instanceLogs",
                 "instanceLogStream",
+                "instanceResourceStatistics",
+                "instanceCommissionHistory",
                 "instanceLiveScreenshot",
                 "coreUpdate",
             ],
@@ -441,6 +505,31 @@ class TestApiRoutes(unittest.TestCase):
             1_777_000_000_123, response.json()["entries"][0]["timestampMs"]
         )
 
+    def test_get_resource_statistics(self):
+        response = self.client.get(
+            "/api/v1/instances/alas/statistics/resources?limit=200"
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(200, response.json()["limit"])
+        self.assertEqual(12_000, response.json()["items"][0]["oil"])
+        self.assertEqual(
+            1_777_000_000_123, response.json()["items"][0]["timestampMs"]
+        )
+
+    def test_get_paginated_commission_statistics(self):
+        response = self.client.get(
+            "/api/v1/instances/alas/statistics/commissions?page=1&pageSize=20"
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(1, response.json()["page"])
+        self.assertEqual(20, response.json()["pageSize"])
+        self.assertEqual(1, response.json()["totalPages"])
+        self.assertEqual("cube", response.json()["items"][0]["rewards"][0]["key"])
+        self.assertEqual(5000, response.json()["retention"]["maxEntriesPerMonth"])
+        self.assertFalse(response.json()["retention"]["automaticMonthCleanup"])
+
     def test_serialize_instance_log_stream_event(self):
         snapshot = FakeLogReadService().get("alas", limit=20, output_format="ansi")
         event = _serialize_log_event(
@@ -484,11 +573,21 @@ class TestApiRoutes(unittest.TestCase):
         stream_response = self.client.get(
             "/api/v1/instances/alas/logs/stream?limit=bad"
         )
+        resource_response = self.client.get(
+            "/api/v1/instances/alas/statistics/resources?limit=bad"
+        )
+        commission_response = self.client.get(
+            "/api/v1/instances/alas/statistics/commissions?page=bad"
+        )
 
         self.assertEqual(422, response.status_code)
         self.assertEqual("invalid_query", response.json()["error"]["code"])
         self.assertEqual(422, stream_response.status_code)
         self.assertEqual("invalid_query", stream_response.json()["error"]["code"])
+        self.assertEqual(422, resource_response.status_code)
+        self.assertEqual("invalid_query", resource_response.json()["error"]["code"])
+        self.assertEqual(422, commission_response.status_code)
+        self.assertEqual("invalid_query", commission_response.json()["error"]["code"])
 
     def test_data_read_error_does_not_expose_details(self):
         response = self.client.get("/api/v1/instances/broken/config")
@@ -505,6 +604,8 @@ class TestApiRoutes(unittest.TestCase):
             "/api/v1/instances/missing/tasks/stream",
             "/api/v1/instances/missing/logs",
             "/api/v1/instances/missing/logs/stream",
+            "/api/v1/instances/missing/statistics/resources",
+            "/api/v1/instances/missing/statistics/commissions",
             "/api/v1/instances/missing/live-screenshot",
         )
         for path in paths:
