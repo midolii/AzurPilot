@@ -192,6 +192,15 @@ Error:
   AdbOfflineThreshold:
     value: 3
     validate: [1, 10]
+  WatchdogEnable: false
+  WatchdogTaskEnable: false
+  WatchdogTaskTimeout:
+    value: 120
+    validate: [0, 99999]
+  RestartOperationTimeoutEnable: false
+  RestartOperationTimeout:
+    value: 120
+    validate: [10, 600]
   LlmAnalysis: true
   LlmApiKey:
     type: textarea
@@ -201,6 +210,14 @@ Error:
     value: "https://api.xiaomimimo.com/v1"
   LlmModel:
     value: "mimo-v2.5-pro"
+    valuetype: str
+DailySummary:
+  Enable:
+    type: checkbox
+    value: false
+    option: [true, false]
+  TriggerTime:
+    value: "20:00"
     valuetype: str
 Optimization:
   OcrDevice:
@@ -235,6 +252,9 @@ Optimization:
   WhenTaskQueueEmpty:
     value: goto_main
     option: [stay_there, goto_main, close_game]
+  WhenSchedulerStopped:
+    value: stay_there
+    option: [stay_there, goto_main, close_game, close_emulator]
 DropRecord:
   SaveFolder: ./screenshots
   AzurStatsID: null
@@ -1942,6 +1962,7 @@ GameManager:
   AutoRestart: true
 EmulatorManagement:
   ScheduledEmulatorRestart: false
+  ForceScheduledRestart: false
   RestartIntervalHours:
     value: 4
     validate: [1, 24]

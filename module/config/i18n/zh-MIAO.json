@@ -745,6 +745,26 @@
       "name": "检测不到设备重启阈值",
       "help": "连续多少次触发重启喵。"
     },
+    "WatchdogEnable": {
+      "name": "Error.WatchdogEnable.name",
+      "help": "Error.WatchdogEnable.help"
+    },
+    "WatchdogTaskEnable": {
+      "name": "Error.WatchdogTaskEnable.name",
+      "help": "Error.WatchdogTaskEnable.help"
+    },
+    "WatchdogTaskTimeout": {
+      "name": "Error.WatchdogTaskTimeout.name",
+      "help": "Error.WatchdogTaskTimeout.help"
+    },
+    "RestartOperationTimeoutEnable": {
+      "name": "Error.RestartOperationTimeoutEnable.name",
+      "help": "Error.RestartOperationTimeoutEnable.help"
+    },
+    "RestartOperationTimeout": {
+      "name": "Error.RestartOperationTimeout.name",
+      "help": "Error.RestartOperationTimeout.help"
+    },
     "LlmAnalysis": {
       "name": "启用 LLM 错误分析喵",
       "help": "发生异常时调用LLM分析原因给建议喵~ (ΦωΦ)"
@@ -760,6 +780,22 @@
     "LlmModel": {
       "name": "LLM 模型选择 ∩",
       "help": "填写已购买服务支持的模型名称，请以 https://platform.deepseek.com/ 或 https://platform.xiaomimimo.com/ 平台展示为准喵。"
+    }
+  },
+  "DailySummary": {
+    "_info": {
+      "name": "每日总结喵",
+      "help": "每天在设定时间生成并推送运行总结喵。需要先在调试设置里配置 OnePush 和 LLM 喵。"
+    },
+    "Enable": {
+      "name": "启用每日总结喵",
+      "help": "开启后，AzurPilot 会在设定时间生成并推送当天的运行总结喵。",
+      "True": "开启喵",
+      "False": "关闭喵"
+    },
+    "TriggerTime": {
+      "name": "生成时间喵",
+      "help": "按游戏服务器时区生成日报的时间，格式是 HH:MM，例如 20:00 喵。"
     }
   },
   "Optimization": {
@@ -794,7 +830,7 @@
     },
     "OcrModelVersionEnglish": {
       "name": "OCR英文模型版本喵",
-      "help": "选择英文OCR模型档位喵。lite轻量最快喵，standard均衡喵，pro精度最高喵。auto使用standard喵。alocr_en_v2_6为旧版AlOCR专用英文模型喵，仅ONNX后端可用喵。该项影响英文Azur Lane模型。",
+      "help": "选择英文OCR模型档位喵。lite轻量最快喵，standard均衡喵，pro精度最高喵。auto使用旧版alocr_en_v2_6喵。alocr_en_v2_6为旧版AlOCR专用英文模型喵，仅ONNX后端可用喵。该项影响英文Azur Lane模型。",
       "auto": "自动推荐喵",
       "lite": "Lite 轻量喵",
       "standard": "Standard 标准喵",
@@ -803,7 +839,7 @@
     },
     "OcrModelVersionChinese": {
       "name": "OCR中文模型版本喵",
-      "help": "选择简体中文OCR模型档位喵。lite轻量最快喵，standard均衡喵，pro精度最高喵。auto使用standard喵。alocr_cn_v3为旧版AlOCR专用中文模型喵，仅ONNX后端可用喵。该项影响cnocr/中文模型。",
+      "help": "选择简体中文OCR模型档位喵。lite轻量最快喵，standard均衡喵，pro精度最高喵。auto使用旧版alocr_cn_v3喵。alocr_cn_v3为旧版AlOCR专用中文模型喵，仅ONNX后端可用喵。该项影响cnocr/中文模型。",
       "auto": "自动推荐喵",
       "lite": "Lite 轻量喵",
       "standard": "Standard 标准喵",
@@ -850,6 +886,14 @@
       "stay_there": "停在原地发呆",
       "goto_main": "回主界面喵",
       "close_game": "关闭游戏喵"
+    },
+    "WhenSchedulerStopped": {
+      "name": "停止调度器后",
+      "help": "在 WebUI 停止调度器后执行的操作喵~",
+      "stay_there": "停在原地发呆",
+      "goto_main": "回主界面喵",
+      "close_game": "关闭游戏喵",
+      "close_emulator": "关闭模拟器喵"
     }
   },
   "DropRecord": {
@@ -5954,6 +5998,10 @@
       "name": "定时重启模拟器",
       "help": "每隔指定时间自动重启模拟器，防内存泄漏卡顿，等当前任务完成再重启喵。 (´・ω・`)"
     },
+    "ForceScheduledRestart": {
+      "name": "EmulatorManagement.ForceScheduledRestart.name",
+      "help": "EmulatorManagement.ForceScheduledRestart.help"
+    },
     "RestartIntervalHours": {
       "name": "重启间隔",
       "help": ""
@@ -6428,6 +6476,7 @@
       "LoadApDataFailed": "加载体力数据失败: {e}",
       "NoApData": "暂无体力数据，运行侵蚀1任务后自动记录喵",
       "Refresh": "刷新喵",
+      "NewDataAvailable": "有新的统计数据喵，点击刷新",
       "NoValidApData": "暂无有效体力数据喵",
       "ViewTitleLine": "分时曲线 喵",
       "ViewTitleDay": "天视图 喵",

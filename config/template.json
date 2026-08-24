@@ -101,10 +101,19 @@
       "GameStuckThreshold": 3,
       "AdbOfflineRestart": false,
       "AdbOfflineThreshold": 3,
+      "WatchdogEnable": false,
+      "WatchdogTaskEnable": false,
+      "WatchdogTaskTimeout": 120,
+      "RestartOperationTimeoutEnable": false,
+      "RestartOperationTimeout": 120,
       "LlmAnalysis": true,
       "LlmApiKey": null,
       "LlmApiBase": "https://api.xiaomimimo.com/v1",
       "LlmModel": "mimo-v2.5-pro"
+    },
+    "DailySummary": {
+      "Enable": false,
+      "TriggerTime": "20:00"
     },
     "Optimization": {
       "OcrDevice": "auto",
@@ -118,7 +127,8 @@
       "CombatScreenshotInterval": 1.0,
       "TaskHoardingDuration": 0,
       "CloseEmulatorDuringLongWait": true,
-      "WhenTaskQueueEmpty": "goto_main"
+      "WhenTaskQueueEmpty": "goto_main",
+      "WhenSchedulerStopped": "stay_there"
     },
     "DropRecord": {
       "SaveFolder": "./screenshots",
@@ -135,6 +145,7 @@
     },
     "EmulatorManagement": {
       "ScheduledEmulatorRestart": false,
+      "ForceScheduledRestart": false,
       "RestartIntervalHours": 4
     },
     "Storage": {
