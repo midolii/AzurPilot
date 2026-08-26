@@ -5,6 +5,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route, WebSocketRoute
 
+from module.logger import logger
 from module.extension_api.auth import (
     AuthenticationRequiredError,
     AuthService,
@@ -257,10 +258,18 @@ async def _authentication_required(
 
 
 async def _permission_denied(
-    _request: Request, exc: PermissionDeniedError
+    request: Request, exc: PermissionDeniedError
 ) -> JSONResponse:
+    logger.warning(
+        f"[API] 拒绝请求 {request.method} {request.url.path}: {exc}"
+    )
     return model_response(
-        ErrorResponse(error=ErrorDetail(code="permission_denied", message=str(exc))),
+        ErrorResponse(
+            error=ErrorDetail(
+                code="permission_denied",
+                message="请求未获授权",
+            )
+        ),
         status_code=403,
     )
 

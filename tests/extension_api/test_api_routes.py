@@ -482,6 +482,7 @@ class TestApiRoutes(unittest.TestCase):
         denied = isolated_client.get("/api/v1/instances", headers=headers)
         self.assertEqual(403, denied.status_code)
         self.assertEqual("permission_denied", denied.json()["error"]["code"])
+        self.assertEqual("请求未获授权", denied.json()["error"]["message"])
 
     def test_cookie_mutation_rejects_cross_origin_requests(self):
         response = self.client.post(
@@ -491,6 +492,8 @@ class TestApiRoutes(unittest.TestCase):
 
         self.assertEqual(403, response.status_code)
         self.assertEqual("permission_denied", response.json()["error"]["code"])
+        self.assertEqual("请求未获授权", response.json()["error"]["message"])
+        self.assertNotIn("跨站", response.text)
 
     def test_https_proxy_marks_session_cookie_secure(self):
         response = self.client.post(
