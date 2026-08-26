@@ -3,18 +3,20 @@
 from typing import Any
 
 
-CONTROL_PROTOCOL_VERSION = 1
+CONTROL_PROTOCOL_VERSION = 2
 CONTROL_COORDINATE_WIDTH = 1280
 CONTROL_COORDINATE_HEIGHT = 720
 CONTROL_ACTIONS = (
     "tap",
     "drag",
+    "touch",
     "key",
     "text",
     "back",
     "home",
     "app_switch",
 )
+CONTROL_TOUCH_PHASES = ("down", "move", "up")
 
 
 class LiveControlCommandError(ValueError):
@@ -94,6 +96,21 @@ def parse_control_command(data: Any) -> dict[str, Any]:
             minimum=40,
             maximum=1500,
             command_id=command_id,
+        )
+    elif action == "touch":
+        phase = data.get("phase")
+        if phase not in CONTROL_TOUCH_PHASES:
+            raise LiveControlCommandError(
+                "invalid_touch_phase",
+                f"touch.phase 必须是 {', '.join(CONTROL_TOUCH_PHASES)} 之一",
+                command_id,
+            )
+        command["phase"] = phase
+        command["x"] = _parse_coordinate(
+            data.get("x"), "x", CONTROL_COORDINATE_WIDTH, command_id
+        )
+        command["y"] = _parse_coordinate(
+            data.get("y"), "y", CONTROL_COORDINATE_HEIGHT, command_id
         )
     elif action == "key":
         keycode = data.get("keycode")

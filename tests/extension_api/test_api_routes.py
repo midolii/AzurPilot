@@ -355,7 +355,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.9.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.9.1"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -444,11 +444,12 @@ class TestApiRoutes(unittest.TestCase):
                 "control": {
                     "transport": "websocket",
                     "path": "/ws/live_control",
-                    "protocolVersion": 1,
+                    "protocolVersion": 2,
                     "coordinateSpace": {"width": 1280, "height": 720},
                     "actions": [
                         "tap",
                         "drag",
+                        "touch",
                         "key",
                         "text",
                         "back",

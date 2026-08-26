@@ -57,7 +57,7 @@ class LiveControlStreamResponse(ApiModel):
 
     transport: str = "websocket"
     path: str = "/ws/live_control"
-    protocol_version: int = 1
+    protocol_version: int = 2
     coordinate_space: LiveControlCoordinateSpaceResponse = Field(
         default_factory=LiveControlCoordinateSpaceResponse
     )
@@ -65,6 +65,7 @@ class LiveControlStreamResponse(ApiModel):
         default_factory=lambda: [
             "tap",
             "drag",
+            "touch",
             "key",
             "text",
             "back",

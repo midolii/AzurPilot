@@ -669,6 +669,14 @@ class LiveWsScrcpySession:
         self._send_control(self._touch_message(x, y, scrcpy_const.ACTION_DOWN))
         self._send_control(self._touch_message(x, y, scrcpy_const.ACTION_UP))
 
+    def touch(self, x, y, phase):
+        action = {
+            "down": scrcpy_const.ACTION_DOWN,
+            "move": scrcpy_const.ACTION_MOVE,
+            "up": scrcpy_const.ACTION_UP,
+        }[phase]
+        self._send_control(self._touch_message(x, y, action))
+
     def drag(self, start, end, duration_ms=220):
         sx, sy = start.get("x", 0), start.get("y", 0)
         ex, ey = end.get("x", 0), end.get("y", 0)
@@ -895,6 +903,16 @@ class LiveScrcpySession:
             self.control_sender.touch(x, y, scrcpy_const.ACTION_DOWN)
             self.control_sender.touch(x, y, scrcpy_const.ACTION_UP)
 
+    def touch(self, x, y, phase):
+        x, y = self.scale_point(x, y)
+        action = {
+            "down": scrcpy_const.ACTION_DOWN,
+            "move": scrcpy_const.ACTION_MOVE,
+            "up": scrcpy_const.ACTION_UP,
+        }[phase]
+        with self.control_lock:
+            self.control_sender.touch(x, y, action)
+
     def drag(self, start, end, duration_ms=220):
         sx, sy = self.scale_point(start.get("x", 0), start.get("y", 0))
         ex, ey = self.scale_point(end.get("x", 0), end.get("y", 0))
@@ -949,6 +967,15 @@ class LiveControlDevice:
 
     def tap(self, x, y):
         self.connection.adb_shell(["input", "tap", int(x), int(y)])
+
+    def touch(self, x, y, phase):
+        self.connection.adb_shell([
+            "input",
+            "motionevent",
+            phase.upper(),
+            int(x),
+            int(y),
+        ])
 
     def drag(self, start, end, duration_ms=220):
         p1 = (int(start.get("x", 0)), int(start.get("y", 0)))
@@ -1403,6 +1430,13 @@ async def ws_live_control(websocket):
                     y = command["y"]
                     logger.info(f"[WebUI] 实时预览控制：点击 ({x}, {y})")
                     await asyncio.to_thread(target.tap, x, y)
+                elif action == "touch":
+                    phase = command["phase"]
+                    x = command["x"]
+                    y = command["y"]
+                    if phase != "move":
+                        logger.info(f"[WebUI] 实时预览控制：触摸 {phase} ({x}, {y})")
+                    await asyncio.to_thread(target.touch, x, y, phase)
                 elif action == "drag":
                     start = command["start"]
                     end = command["end"]
@@ -1428,7 +1462,9 @@ async def ws_live_control(websocket):
                     keycode = CONTROL_ACTION_KEYCODES[action]
                     logger.info(f"[WebUI] 实时预览控制：系统按键 {action} ({keycode})")
                     await asyncio.to_thread(target.keycode, keycode)
-                await websocket.send_text(json.dumps(ack_message(command), ensure_ascii=False))
+                # 高频 move 不逐帧确认，避免回执占满控制通道；手势边界仍会确认。
+                if action != "touch" or command["phase"] != "move":
+                    await websocket.send_text(json.dumps(ack_message(command), ensure_ascii=False))
             except LiveControlCommandError as e:
                 await websocket.send_text(json.dumps(error_message(
                     e.code,

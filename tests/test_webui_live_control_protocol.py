@@ -14,9 +14,10 @@ class TestLiveControlProtocol(unittest.TestCase):
         message = ready_message("alas")
 
         self.assertEqual("ready", message["type"])
-        self.assertEqual(1, message["protocolVersion"])
+        self.assertEqual(2, message["protocolVersion"])
         self.assertEqual({"width": 1280, "height": 720}, message["coordinateSpace"])
         self.assertIn("tap", message["actions"])
+        self.assertIn("touch", message["actions"])
         self.assertIn("app_switch", message["actions"])
 
     def test_parse_tap_and_drag_commands(self):
@@ -35,6 +36,30 @@ class TestLiveControlProtocol(unittest.TestCase):
         )
         self.assertEqual(300, drag["duration_ms"])
         self.assertEqual({"x": 900, "y": 500}, drag["end"])
+
+    def test_parse_continuous_touch_commands(self):
+        touch = parse_control_command({
+            "id": "touch-1",
+            "type": "touch",
+            "phase": "move",
+            "x": 320,
+            "y": 180,
+        })
+
+        self.assertEqual({
+            "id": "touch-1",
+            "type": "touch",
+            "phase": "move",
+            "x": 320,
+            "y": 180,
+        }, touch)
+        with self.assertRaisesRegex(LiveControlCommandError, "touch.phase"):
+            parse_control_command({
+                "type": "touch",
+                "phase": "cancel",
+                "x": 320,
+                "y": 180,
+            })
 
     def test_rejects_out_of_bounds_and_oversized_input(self):
         with self.assertRaisesRegex(LiveControlCommandError, "x 必须位于") as context:
