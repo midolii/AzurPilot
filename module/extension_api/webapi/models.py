@@ -45,6 +45,35 @@ class InstanceListResponse(ApiModel):
     items: list[InstanceResponse]
 
 
+class LiveControlCoordinateSpaceResponse(ApiModel):
+    """浏览器控制事件使用的稳定坐标空间。"""
+
+    width: int = 1280
+    height: int = 720
+
+
+class LiveControlStreamResponse(ApiModel):
+    """实例实时控制连接描述。"""
+
+    transport: str = "websocket"
+    path: str = "/ws/live_control"
+    protocol_version: int = 1
+    coordinate_space: LiveControlCoordinateSpaceResponse = Field(
+        default_factory=LiveControlCoordinateSpaceResponse
+    )
+    actions: list[str] = Field(
+        default_factory=lambda: [
+            "tap",
+            "drag",
+            "key",
+            "text",
+            "back",
+            "home",
+            "app_switch",
+        ]
+    )
+
+
 class LiveScreenshotStreamResponse(ApiModel):
     """实例实时截图的媒体连接描述。"""
 
@@ -57,6 +86,7 @@ class LiveScreenshotStreamResponse(ApiModel):
     default_fps: int = 60
     default_width: int = 640
     default_bitrate_scale: float = 1.0
+    control: LiveControlStreamResponse = Field(default_factory=LiveControlStreamResponse)
 
 
 class ConfigResponse(ApiModel):

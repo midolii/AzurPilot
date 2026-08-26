@@ -31,7 +31,7 @@ from module.device.method.scrcpy.control import ControlSender
 from module.device.method.scrcpy.options import ScrcpyOptions
 from module.device.method.utils import recv_all
 from module.logger import logger
-from module.config.utils import DEFAULT_CONFIG_NAME
+from module.config.utils import DEFAULT_CONFIG_NAME, alas_instance
 from module.webui.deploy_settings import (
     deploy_settings_schema,
     get_startup_run,
@@ -40,6 +40,13 @@ from module.webui.deploy_settings import (
 )
 from module.webui.launcher import is_local_request, launcher_control
 from module.webui.lang import t
+from module.webui.live_control_protocol import (
+    LiveControlCommandError,
+    ack_message,
+    error_message,
+    parse_control_command,
+    ready_message,
+)
 
 
 def is_demo_mode():
@@ -986,6 +993,10 @@ CONTROL_ACTION_KEYCODES = {
 }
 
 
+_live_control_clients = {}
+_live_control_clients_lock = threading.Lock()
+
+
 def _create_live_ws_scrcpy_session(instance, fps, target_width, bitrate_scale):
     return LiveWsScrcpySession(
         instance,
@@ -1327,13 +1338,35 @@ async def _ws_live_screenshot_fallback(websocket, instance, codec, ffmpeg, fps, 
 async def ws_live_control(websocket):
     await websocket.accept()
     if is_demo_mode():
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": "DEMO=1，实时控制已禁用，避免初始化设备资源。",
-        }))
-        await websocket.close()
+        await websocket.send_text(json.dumps(error_message(
+            "control_unavailable",
+            "DEMO=1，实时控制已禁用，避免初始化设备资源。",
+        ), ensure_ascii=False))
+        await websocket.close(code=4403)
         return
     instance = websocket.query_params.get("instance", DEFAULT_CONFIG_NAME)
+    if instance not in alas_instance():
+        await websocket.send_text(json.dumps(error_message(
+            "instance_not_found",
+            f"实例不存在: {instance}",
+        ), ensure_ascii=False))
+        await websocket.close(code=4404)
+        return
+
+    with _live_control_clients_lock:
+        if instance in _live_control_clients:
+            control_acquired = False
+        else:
+            _live_control_clients[instance] = websocket
+            control_acquired = True
+    if not control_acquired:
+        await websocket.send_text(json.dumps(error_message(
+            "control_session_busy",
+            "该实例已被另一个网页控制会话接管",
+        ), ensure_ascii=False))
+        await websocket.close(code=4409)
+        return
+
     fallback = None
 
     def get_target():
@@ -1349,47 +1382,67 @@ async def ws_live_control(websocket):
         return fallback
 
     try:
+        await websocket.send_text(json.dumps(ready_message(instance), ensure_ascii=False))
         while True:
             raw = await websocket.receive_text()
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_text(json.dumps({"type": "error", "message": "控制消息不是有效 JSON"}))
+                await websocket.send_text(json.dumps(error_message(
+                    "invalid_json",
+                    "控制消息不是有效 JSON",
+                ), ensure_ascii=False))
                 continue
 
-            action = data.get("type")
-            target = get_target()
-            if action == "tap":
-                x = int(data.get("x", 0))
-                y = int(data.get("y", 0))
-                logger.info(f"[WebUI] 实时预览控制：点击 ({x}, {y})")
-                await asyncio.to_thread(target.tap, x, y)
-            elif action == "drag":
-                start = data.get("start") or {}
-                end = data.get("end") or {}
-                duration_ms = data.get("duration_ms", 220)
-                logger.info(f"[WebUI] 实时预览控制：拖拽 {start} -> {end}")
-                await asyncio.to_thread(target.drag, start, end, duration_ms)
-            elif action == "key":
-                keycode = data.get("keycode")
-                if keycode is None:
-                    keycode = _key_to_android_keycode(data.get("key"))
-                if keycode is not None:
+            try:
+                command = parse_control_command(data)
+                action = command["type"]
+                target = get_target()
+                if action == "tap":
+                    x = command["x"]
+                    y = command["y"]
+                    logger.info(f"[WebUI] 实时预览控制：点击 ({x}, {y})")
+                    await asyncio.to_thread(target.tap, x, y)
+                elif action == "drag":
+                    start = command["start"]
+                    end = command["end"]
+                    duration_ms = command["duration_ms"]
+                    logger.info(f"[WebUI] 实时预览控制：拖拽 {start} -> {end}")
+                    await asyncio.to_thread(target.drag, start, end, duration_ms)
+                elif action == "key":
+                    keycode = command.get("keycode")
+                    if keycode is None:
+                        keycode = _key_to_android_keycode(command.get("key"))
+                    if keycode is None:
+                        raise LiveControlCommandError(
+                            "unsupported_key",
+                            f"不支持的按键: {command.get('key')}",
+                            command.get("id"),
+                        )
                     logger.info(f"[WebUI] 实时预览控制：按键 {keycode}")
                     await asyncio.to_thread(target.keycode, keycode)
-            elif action == "text":
-                text = data.get("text", "")
-                logger.info("[WebUI] 实时预览控制：文本输入")
-                await asyncio.to_thread(target.text, text)
-            elif action == "back":
-                logger.info("[WebUI] 实时预览控制：返回")
-                await asyncio.to_thread(target.keycode, scrcpy_const.KEYCODE_BACK)
-            elif action in CONTROL_ACTION_KEYCODES:
-                keycode = CONTROL_ACTION_KEYCODES[action]
-                logger.info(f"[WebUI] 实时预览控制：系统按键 {action} ({keycode})")
-                await asyncio.to_thread(target.keycode, keycode)
-            else:
-                await websocket.send_text(json.dumps({"type": "error", "message": f"未知控制动作: {action}"}))
+                elif action == "text":
+                    logger.info("[WebUI] 实时预览控制：文本输入")
+                    await asyncio.to_thread(target.text, command["text"])
+                elif action in CONTROL_ACTION_KEYCODES:
+                    keycode = CONTROL_ACTION_KEYCODES[action]
+                    logger.info(f"[WebUI] 实时预览控制：系统按键 {action} ({keycode})")
+                    await asyncio.to_thread(target.keycode, keycode)
+                await websocket.send_text(json.dumps(ack_message(command), ensure_ascii=False))
+            except LiveControlCommandError as e:
+                await websocket.send_text(json.dumps(error_message(
+                    e.code,
+                    str(e),
+                    e.command_id,
+                ), ensure_ascii=False))
+            except Exception as e:
+                logger.exception(f"[WebUI] 实时预览控制操作失败: {instance}")
+                command_id = data.get("id") if isinstance(data, dict) else None
+                await websocket.send_text(json.dumps(error_message(
+                    "control_failed",
+                    _live_preview_error_message(e),
+                    command_id,
+                ), ensure_ascii=False))
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -1399,6 +1452,10 @@ async def ws_live_control(websocket):
             await websocket.send_text(json.dumps({"type": "error", "message": message}))
         except Exception:
             pass
+    finally:
+        with _live_control_clients_lock:
+            if _live_control_clients.get(instance) is websocket:
+                _live_control_clients.pop(instance, None)
 
 _notification_queue = asyncio.Queue()
 

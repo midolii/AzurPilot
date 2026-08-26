@@ -355,7 +355,7 @@ class TestApiRoutes(unittest.TestCase):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.8.0"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "0.9.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -380,6 +380,7 @@ class TestApiRoutes(unittest.TestCase):
                 "instanceCommissionHistory",
                 "instanceCommissionSummary",
                 "instanceLiveScreenshot",
+                "instanceLiveControl",
                 "coreUpdate",
             ],
             response.json()["capabilities"],
@@ -440,6 +441,21 @@ class TestApiRoutes(unittest.TestCase):
                 "defaultFps": 60,
                 "defaultWidth": 640,
                 "defaultBitrateScale": 1.0,
+                "control": {
+                    "transport": "websocket",
+                    "path": "/ws/live_control",
+                    "protocolVersion": 1,
+                    "coordinateSpace": {"width": 1280, "height": 720},
+                    "actions": [
+                        "tap",
+                        "drag",
+                        "key",
+                        "text",
+                        "back",
+                        "home",
+                        "app_switch",
+                    ],
+                },
             },
             response.json(),
         )

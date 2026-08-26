@@ -36,6 +36,7 @@ async def system(request: Request) -> JSONResponse:
                 "instanceCommissionHistory",
                 "instanceCommissionSummary",
                 "instanceLiveScreenshot",
+                "instanceLiveControl",
                 "coreUpdate",
             ],
         )
