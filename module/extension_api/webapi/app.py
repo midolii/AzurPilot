@@ -3,8 +3,19 @@
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
 
+from module.extension_api.auth import (
+    AuthenticationRequiredError,
+    AuthService,
+    BootstrapTokenError,
+    PasswordResetTokenError,
+    PermissionDeniedError,
+    RateLimitExceededError,
+    SetupAlreadyCompletedError,
+    SetupRequiredError,
+    ValidationError,
+)
 from module.extension_api.core_facade import CoreFacade
 from module.extension_api.errors import (
     ConfigRevisionConflictError,
@@ -32,8 +43,25 @@ from module.extension_api.services.instance_service import InstanceService
 from module.extension_api.services.log_read_service import LogReadService
 from module.extension_api.services.statistics_read_service import StatisticsReadService
 from module.extension_api.services.task_read_service import TaskReadService
+from module.extension_api.webapi.auth import optional_auth, protected
 from module.extension_api.webapi.models import ErrorDetail, ErrorResponse
 from module.extension_api.webapi.responses import model_response
+from module.extension_api.webapi.routes.auth import (
+    create_client_token,
+    create_websocket_ticket,
+    get_auth_status,
+    get_session,
+    list_client_tokens,
+    login,
+    logout,
+    revoke_client_token,
+    reset_password,
+    setup_auth,
+)
+from module.extension_api.webapi.routes.authenticated_websocket import (
+    live_control_websocket,
+    live_screenshot_websocket,
+)
 from module.extension_api.webapi.routes.core_update import (
     apply_core_update,
     check_core_update,
@@ -208,6 +236,88 @@ async def _core_update_busy(
     )
 
 
+async def _setup_required(_request: Request, exc: SetupRequiredError) -> JSONResponse:
+    return model_response(
+        ErrorResponse(error=ErrorDetail(code="setup_required", message=str(exc))),
+        status_code=503,
+    )
+
+
+async def _authentication_required(
+    _request: Request, exc: AuthenticationRequiredError
+) -> JSONResponse:
+    response = model_response(
+        ErrorResponse(
+            error=ErrorDetail(code="authentication_required", message=str(exc))
+        ),
+        status_code=401,
+    )
+    response.headers["WWW-Authenticate"] = "Bearer"
+    return response
+
+
+async def _permission_denied(
+    _request: Request, exc: PermissionDeniedError
+) -> JSONResponse:
+    return model_response(
+        ErrorResponse(error=ErrorDetail(code="permission_denied", message=str(exc))),
+        status_code=403,
+    )
+
+
+async def _bootstrap_token_invalid(
+    _request: Request, exc: BootstrapTokenError
+) -> JSONResponse:
+    return model_response(
+        ErrorResponse(
+            error=ErrorDetail(code="bootstrap_token_invalid", message=str(exc))
+        ),
+        status_code=403,
+    )
+
+
+async def _password_reset_token_invalid(
+    _request: Request, exc: PasswordResetTokenError
+) -> JSONResponse:
+    return model_response(
+        ErrorResponse(
+            error=ErrorDetail(code="password_reset_token_invalid", message=str(exc))
+        ),
+        status_code=403,
+    )
+
+
+async def _setup_already_completed(
+    _request: Request, exc: SetupAlreadyCompletedError
+) -> JSONResponse:
+    return model_response(
+        ErrorResponse(
+            error=ErrorDetail(code="setup_already_completed", message=str(exc))
+        ),
+        status_code=409,
+    )
+
+
+async def _rate_limited(_request: Request, exc: RateLimitExceededError) -> JSONResponse:
+    response = model_response(
+        ErrorResponse(error=ErrorDetail(code="rate_limited", message=str(exc))),
+        status_code=429,
+    )
+    response.headers["Retry-After"] = "60"
+    return response
+
+
+async def _auth_validation_failed(
+    _request: Request, exc: ValidationError
+) -> JSONResponse:
+    return model_response(
+        ErrorResponse(
+            error=ErrorDetail(code="auth_validation_failed", message=str(exc))
+        ),
+        status_code=422,
+    )
+
+
 def create_api_app(
     facade: CoreFacade | None = None,
     instance_service: InstanceService | None = None,
@@ -218,8 +328,9 @@ def create_api_app(
     log_read_service: LogReadService | None = None,
     statistics_read_service: StatisticsReadService | None = None,
     core_update_service: CoreUpdateService | None = None,
+    auth_service: AuthService | None = None,
 ) -> Starlette:
-    """创建挂载在 ``/api/v1`` 下的无状态传输层。"""
+    """创建挂载在 ``/api/v1`` 下的扩展 API 传输层。"""
     facade = facade or CoreFacade()
     instance_service = instance_service or InstanceService(facade)
     sensitive_policy = SensitiveValuePolicy()
@@ -236,86 +347,139 @@ def create_api_app(
     log_read_service = log_read_service or LogReadService(facade, sensitive_policy)
     statistics_read_service = statistics_read_service or StatisticsReadService(facade)
     core_update_service = core_update_service or CoreUpdateService()
+    auth_service = auth_service or AuthService()
     application = Starlette(
         routes=[
             Route("/health", health, methods=["GET"]),
-            Route("/system", system, methods=["GET"]),
-            Route("/updates/core", get_core_update, methods=["GET"]),
-            Route("/updates/core/check", check_core_update, methods=["POST"]),
-            Route("/updates/core/apply", apply_core_update, methods=["POST"]),
-            Route("/instances/stream", stream_instances, methods=["GET"]),
-            Route("/instances", list_instances, methods=["GET"]),
+            Route("/auth/status", get_auth_status, methods=["GET"]),
+            Route("/auth/setup", setup_auth, methods=["POST"]),
+            Route("/auth/login", login, methods=["POST"]),
+            Route("/auth/password-reset", reset_password, methods=["POST"]),
+            Route("/auth/logout", logout, methods=["POST"]),
+            Route("/auth/session", optional_auth(get_session), methods=["GET"]),
+            Route(
+                "/auth/tokens",
+                protected(list_client_tokens, "tokens:manage"),
+                methods=["GET"],
+            ),
+            Route(
+                "/auth/tokens",
+                protected(create_client_token, "tokens:manage"),
+                methods=["POST"],
+            ),
+            Route(
+                "/auth/tokens/{token_id:str}",
+                protected(revoke_client_token, "tokens:manage"),
+                methods=["DELETE"],
+            ),
+            Route(
+                "/auth/ws-tickets",
+                protected(create_websocket_ticket),
+                methods=["POST"],
+            ),
+            WebSocketRoute("/ws/live_screenshot", live_screenshot_websocket),
+            WebSocketRoute("/ws/live_control", live_control_websocket),
+            Route("/system", protected(system, "system:read"), methods=["GET"]),
+            Route(
+                "/updates/core",
+                protected(get_core_update, "system:read"),
+                methods=["GET"],
+            ),
+            Route(
+                "/updates/core/check",
+                protected(check_core_update, "core:update"),
+                methods=["POST"],
+            ),
+            Route(
+                "/updates/core/apply",
+                protected(apply_core_update, "core:update"),
+                methods=["POST"],
+            ),
+            Route(
+                "/instances/stream",
+                protected(stream_instances, "instances:read"),
+                methods=["GET"],
+            ),
+            Route(
+                "/instances",
+                protected(list_instances, "instances:read"),
+                methods=["GET"],
+            ),
             Route(
                 "/instances/{instance:str}/config/schema",
-                get_instance_config_schema,
+                protected(get_instance_config_schema, "config:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/config",
-                get_instance_config,
+                protected(get_instance_config, "config:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/config",
-                patch_instance_config,
+                protected(patch_instance_config, "config:write"),
                 methods=["PATCH"],
             ),
             Route(
                 "/instances/{instance:str}/tasks/stream",
-                get_instance_tasks_stream,
+                protected(get_instance_tasks_stream, "tasks:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/tasks",
-                get_instance_tasks,
+                protected(get_instance_tasks, "tasks:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/tasks/{task:str}/run-now",
-                run_task_now,
+                protected(run_task_now, "tasks:run"),
                 methods=["POST"],
             ),
             Route(
                 "/instances/{instance:str}/start",
-                start_instance,
+                protected(start_instance, "instances:operate"),
                 methods=["POST"],
             ),
             Route(
                 "/instances/{instance:str}/stop",
-                stop_instance,
+                protected(stop_instance, "instances:operate"),
                 methods=["POST"],
             ),
             Route(
                 "/instances/{instance:str}/logs/stream",
-                get_instance_logs_stream,
+                protected(get_instance_logs_stream, "logs:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/logs",
-                get_instance_logs,
+                protected(get_instance_logs, "logs:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/statistics/resources",
-                get_resource_statistics,
+                protected(get_resource_statistics, "statistics:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/statistics/commissions",
-                get_commission_statistics,
+                protected(get_commission_statistics, "statistics:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/statistics/commissions/summary",
-                get_commission_summary,
+                protected(get_commission_summary, "statistics:read"),
                 methods=["GET"],
             ),
             Route(
                 "/instances/{instance:str}/live-screenshot",
-                get_live_screenshot_stream,
+                protected(get_live_screenshot_stream, "media:view"),
                 methods=["GET"],
             ),
-            Route("/instances/{instance:str}", get_instance, methods=["GET"]),
+            Route(
+                "/instances/{instance:str}",
+                protected(get_instance, "instances:read"),
+                methods=["GET"],
+            ),
         ],
         exception_handlers={
             InstanceNotFoundError: _instance_not_found,
@@ -331,6 +495,14 @@ def create_api_app(
             DataWriteError: _data_write_failed,
             CoreUpdateUnavailableError: _core_update_unavailable,
             CoreUpdateBusyError: _core_update_busy,
+            SetupRequiredError: _setup_required,
+            AuthenticationRequiredError: _authentication_required,
+            PermissionDeniedError: _permission_denied,
+            BootstrapTokenError: _bootstrap_token_invalid,
+            PasswordResetTokenError: _password_reset_token_invalid,
+            SetupAlreadyCompletedError: _setup_already_completed,
+            RateLimitExceededError: _rate_limited,
+            ValidationError: _auth_validation_failed,
         },
     )
     application.state.core_facade = facade
@@ -342,4 +514,5 @@ def create_api_app(
     application.state.log_read_service = log_read_service
     application.state.statistics_read_service = statistics_read_service
     application.state.core_update_service = core_update_service
+    application.state.auth_service = auth_service
     return application

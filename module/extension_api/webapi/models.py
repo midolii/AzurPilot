@@ -1,7 +1,7 @@
 """REST API 请求与响应模型。"""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,6 +34,73 @@ class SystemResponse(ApiModel):
     capabilities: list[str]
 
 
+class AuthStatusResponse(ApiModel):
+    initialized: bool
+    setup_required: bool
+    bootstrap_token_required: bool = True
+    password_reset_available: bool = False
+
+
+class AuthUserResponse(ApiModel):
+    username: str
+    scopes: list[str]
+    auth_type: str
+
+
+class AuthSessionResponse(ApiModel):
+    authenticated: bool
+    user: AuthUserResponse | None = None
+    expires_at_ms: int | None = None
+
+
+class AuthSetupRequest(ApiModel):
+    bootstrap_token: str = Field(min_length=20, max_length=256)
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=12, max_length=128)
+
+
+class AuthLoginRequest(ApiModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AuthPasswordResetRequest(ApiModel):
+    reset_token: str = Field(min_length=20, max_length=256)
+    password: str = Field(min_length=12, max_length=128)
+
+
+class ClientTokenCreateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=80)
+    scopes: list[str] = Field(min_length=1, max_length=32)
+    expires_at_ms: int | None = None
+
+
+class ClientTokenResponse(ApiModel):
+    id: str
+    name: str
+    scopes: list[str]
+    created_at_ms: int
+    last_used_at_ms: int | None = None
+    expires_at_ms: int | None = None
+    token: str | None = None
+
+
+class ClientTokenListResponse(ApiModel):
+    items: list[ClientTokenResponse]
+
+
+class WebSocketTicketRequest(ApiModel):
+    purpose: Literal["live_screenshot", "live_control"]
+    instance: str = Field(min_length=1, max_length=128)
+
+
+class WebSocketTicketResponse(ApiModel):
+    ticket: str
+    purpose: Literal["live_screenshot", "live_control"]
+    instance: str
+    expires_at_ms: int
+
+
 class InstanceResponse(ApiModel):
     name: str
     module: str
@@ -56,7 +123,7 @@ class LiveControlStreamResponse(ApiModel):
     """实例实时控制连接描述。"""
 
     transport: str = "websocket"
-    path: str = "/ws/live_control"
+    path: str = "/api/v1/ws/live_control"
     protocol_version: int = 2
     coordinate_space: LiveControlCoordinateSpaceResponse = Field(
         default_factory=LiveControlCoordinateSpaceResponse
@@ -80,14 +147,16 @@ class LiveScreenshotStreamResponse(ApiModel):
 
     instance: str
     transport: str = "websocket"
-    path: str = "/ws/live_screenshot"
+    path: str = "/api/v1/ws/live_screenshot"
     codec: str = "h264"
     modes: list[str] = Field(default_factory=lambda: ["auto", "scrcpy", "screenshot"])
     default_mode: str = "auto"
     default_fps: int = 60
     default_width: int = 640
     default_bitrate_scale: float = 1.0
-    control: LiveControlStreamResponse = Field(default_factory=LiveControlStreamResponse)
+    control: LiveControlStreamResponse = Field(
+        default_factory=LiveControlStreamResponse
+    )
 
 
 class ConfigResponse(ApiModel):

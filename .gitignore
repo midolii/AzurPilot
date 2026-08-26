@@ -8,6 +8,7 @@ config/*.yaml
 !config/deploy.*.yaml
 config/*.json
 config/*.db
+config/extension-api-bootstrap.txt
 config/tmp*
 !config/template*.json
 *.pyw

@@ -21,6 +21,9 @@ async def system(request: Request) -> JSONResponse:
             python_version=facade.get_python_version(),
             platform=facade.get_platform(),
             capabilities=[
+                "authentication",
+                "clientTokens",
+                "authenticatedWebSocket",
                 "instances",
                 "instanceStream",
                 "instanceConfig",

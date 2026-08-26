@@ -1,11 +1,15 @@
+import sys
 import unittest
 from datetime import datetime
-from types import SimpleNamespace
+from tempfile import TemporaryDirectory
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
+from module.extension_api.auth import AuthService
 from module.extension_api.errors import (
     ConfigRevisionConflictError,
     DataReadError,
@@ -214,9 +218,7 @@ class FakeStatisticsReadService:
     def get_commission_summary(self, instance):
         if instance == "missing":
             raise InstanceNotFoundError(instance)
-        item = CommissionSummaryItemSnapshot(
-            key="cube", total=4, count=2, average=2.0
-        )
+        item = CommissionSummaryItemSnapshot(key="cube", total=4, count=2, average=2.0)
         return CommissionSummarySnapshot(
             instance=instance,
             periods=(
@@ -335,6 +337,15 @@ class FakeCoreUpdateService:
 
 class TestApiRoutes(unittest.TestCase):
     def setUp(self):
+        self.auth_directory = TemporaryDirectory()
+        self.addCleanup(self.auth_directory.cleanup)
+        auth_root = self.auth_directory.name
+        auth_service = AuthService(
+            database_path=f"{auth_root}/auth.db",
+            bootstrap_path=f"{auth_root}/bootstrap.txt",
+            password_reset_path=f"{auth_root}/password-reset.json",
+        )
+        self.auth_service = auth_service
         facade = FakeFacade()
         api = create_api_app(
             facade=facade,
@@ -346,16 +357,64 @@ class TestApiRoutes(unittest.TestCase):
             log_read_service=FakeLogReadService(),
             statistics_read_service=FakeStatisticsReadService(),
             core_update_service=FakeCoreUpdateService(),
+            auth_service=auth_service,
         )
         application = Starlette()
         application.mount("/api/v1", api)
         self.client = TestClient(application)
+        setup = self.client.post(
+            "/api/v1/auth/setup",
+            json={
+                "bootstrapToken": auth_service.read_bootstrap_token(),
+                "username": "test-owner",
+                "password": "test-password-strong",
+            },
+        )
+        self.assertEqual(201, setup.status_code, setup.text)
+
+    def test_authenticated_websocket_adapter_consumes_single_use_ticket(self):
+        ticket_response = self.client.post(
+            "/api/v1/auth/ws-tickets",
+            json={"purpose": "live_screenshot", "instance": "alas"},
+        )
+        self.assertEqual(201, ticket_response.status_code, ticket_response.text)
+        ticket = ticket_response.json()["ticket"]
+
+        fake_api = ModuleType("module.webui.api")
+
+        async def fake_live_screenshot(websocket):
+            await websocket.accept()
+            principal = websocket.scope["auth_principal"]
+            await websocket.send_json(
+                {"authType": principal.auth_type, "username": principal.username}
+            )
+            await websocket.close()
+
+        fake_api.ws_live_screenshot = fake_live_screenshot
+        with patch.dict(sys.modules, {"module.webui.api": fake_api}):
+            with self.client.websocket_connect(
+                f"/api/v1/ws/live_screenshot?instance=alas&ticket={ticket}"
+            ) as websocket:
+                self.assertEqual(
+                    {"authType": "websocket_ticket", "username": "test-owner"},
+                    websocket.receive_json(),
+                )
+
+            with (
+                self.assertRaises(WebSocketDisconnect) as rejected,
+                self.client.websocket_connect(
+                    f"/api/v1/ws/live_screenshot?instance=alas&ticket={ticket}"
+                ),
+            ):
+                pass
+
+        self.assertEqual(4401, rejected.exception.code)
 
     def test_health(self):
         response = self.client.get("/api/v1/health")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"status": "ok", "apiVersion": "0.9.1"}, response.json())
+        self.assertEqual({"status": "ok", "apiVersion": "1.0.0"}, response.json())
 
     def test_system(self):
         response = self.client.get("/api/v1/system")
@@ -365,6 +424,9 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual("3.14.6", response.json()["pythonVersion"])
         self.assertEqual(
             [
+                "authentication",
+                "clientTokens",
+                "authenticatedWebSocket",
                 "instances",
                 "instanceStream",
                 "instanceConfig",
@@ -397,6 +459,92 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual("checking", checking.json()["status"])
         self.assertEqual(202, applying.status_code)
         self.assertEqual("starting", applying.json()["status"])
+
+    def test_auth_session_and_client_token_scope(self):
+        session = self.client.get("/api/v1/auth/session")
+        created = self.client.post(
+            "/api/v1/auth/tokens",
+            json={"name": "只读系统检查", "scopes": ["system:read"]},
+        )
+
+        self.assertTrue(session.json()["authenticated"])
+        self.assertEqual("no-store", session.headers["cache-control"])
+        self.assertEqual("test-owner", session.json()["user"]["username"])
+        self.assertEqual(201, created.status_code)
+        token = created.json()["token"]
+
+        isolated_client = TestClient(self.client.app)
+        headers = {"Authorization": f"Bearer {token}"}
+        self.assertEqual(
+            200,
+            isolated_client.get("/api/v1/system", headers=headers).status_code,
+        )
+        denied = isolated_client.get("/api/v1/instances", headers=headers)
+        self.assertEqual(403, denied.status_code)
+        self.assertEqual("permission_denied", denied.json()["error"]["code"])
+
+    def test_cookie_mutation_rejects_cross_origin_requests(self):
+        response = self.client.post(
+            "/api/v1/updates/core/check",
+            headers={"Origin": "https://attacker.example"},
+        )
+
+        self.assertEqual(403, response.status_code)
+        self.assertEqual("permission_denied", response.json()["error"]["code"])
+
+    def test_https_proxy_marks_session_cookie_secure(self):
+        response = self.client.post(
+            "/api/v1/auth/login",
+            json={"username": "test-owner", "password": "test-password-strong"},
+            headers={"X-Forwarded-Proto": "https"},
+        )
+
+        self.assertEqual(200, response.status_code)
+        cookie = response.headers["set-cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=strict", cookie)
+        self.assertIn("Secure", cookie)
+
+    def test_logout_invalidates_session(self):
+        response = self.client.post("/api/v1/auth/logout")
+        denied = self.client.get("/api/v1/system")
+
+        self.assertEqual(204, response.status_code)
+        self.assertEqual(401, denied.status_code)
+        self.assertEqual("authentication_required", denied.json()["error"]["code"])
+
+    def test_password_reset_uses_local_token_and_creates_session(self):
+        challenge = self.auth_service.request_password_reset()
+        status = self.client.get("/api/v1/auth/status")
+        isolated_client = TestClient(self.client.app)
+        reset = isolated_client.post(
+            "/api/v1/auth/password-reset",
+            json={
+                "resetToken": challenge.token,
+                "password": "replacement-password-strong",
+            },
+        )
+
+        self.assertTrue(status.json()["passwordResetAvailable"])
+        self.assertEqual(200, reset.status_code, reset.text)
+        self.assertTrue(reset.json()["authenticated"])
+        self.assertIn("azurpilot_session=", reset.headers["set-cookie"])
+        self.assertFalse(self.auth_service.password_reset_available)
+
+    def test_password_reset_rejects_unknown_token(self):
+        isolated_client = TestClient(self.client.app)
+        response = isolated_client.post(
+            "/api/v1/auth/password-reset",
+            json={
+                "resetToken": "invalid-password-reset-token",
+                "password": "replacement-password-strong",
+            },
+        )
+
+        self.assertEqual(403, response.status_code)
+        self.assertEqual(
+            "password_reset_token_invalid", response.json()["error"]["code"]
+        )
 
     def test_list_instances(self):
         response = self.client.get("/api/v1/instances")
@@ -434,7 +582,7 @@ class TestApiRoutes(unittest.TestCase):
             {
                 "instance": "alas",
                 "transport": "websocket",
-                "path": "/ws/live_screenshot",
+                "path": "/api/v1/ws/live_screenshot",
                 "codec": "h264",
                 "modes": ["auto", "scrcpy", "screenshot"],
                 "defaultMode": "auto",
@@ -443,7 +591,7 @@ class TestApiRoutes(unittest.TestCase):
                 "defaultBitrateScale": 1.0,
                 "control": {
                     "transport": "websocket",
-                    "path": "/ws/live_control",
+                    "path": "/api/v1/ws/live_control",
                     "protocolVersion": 2,
                     "coordinateSpace": {"width": 1280, "height": 720},
                     "actions": [
@@ -565,9 +713,7 @@ class TestApiRoutes(unittest.TestCase):
         self.assertEqual(12_000, response.json()["items"][0]["oil"])
         self.assertEqual(1380, response.json()["items"][0]["actionPoint"])
         self.assertEqual(1200, response.json()["items"][0]["actionPointBox"])
-        self.assertEqual(
-            1_777_000_000_123, response.json()["items"][0]["timestampMs"]
-        )
+        self.assertEqual(1_777_000_000_123, response.json()["items"][0]["timestampMs"])
 
     def test_get_paginated_commission_statistics(self):
         response = self.client.get(
