@@ -1,7 +1,1 @@
-"""Web界面模块。"""
-
-# 必须最先导入，初始化日志目录
-from module.logger import logger
-import deploy.logger
-
-deploy.logger.logger = logger
+"""为 Janus 扩展保留的旧 WebUI 兼容模块。"""

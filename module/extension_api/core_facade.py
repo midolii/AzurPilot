@@ -19,7 +19,7 @@ from module.config.utils import (
     read_file,
 )
 from module.submodule.utils import get_config_mod, get_mod_dir
-from module.webui.process_manager import ProcessManager
+from module.runtime.process_manager import ProcessManager
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -97,7 +97,7 @@ class CoreFacade:
     def start_instance(self, instance: str) -> None:
         """复用原版 WebUI 的调度器启动语义。"""
         self.require_instance(instance)
-        from module.webui.updater import updater
+        from module.runtime.updater import updater
 
         self.get_instance_manager(instance).start(None, updater.event)
 

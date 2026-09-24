@@ -1,8 +1,7 @@
-"""
-Web界面 REST API 路由。
+"""Janus 实时截图与设备控制的旧 WebUI 兼容处理器。
 
-提供 Starlette 路由处理函数，包括大世界统计、AP 时间线、通知推送、
-截图获取、配置导入、远程设备控制等 HTTP/WebSocket 接口。
+上游 WebUI 已迁移到 ``module.api``。扩展 API 仍复用本模块中的 scrcpy
+媒体与控制实现；旧 WebUI 的其他路由仅保留兼容定义，不再由主应用挂载。
 """
 
 import asyncio
@@ -32,22 +31,6 @@ from module.device.method.scrcpy.options import ScrcpyOptions
 from module.device.method.utils import recv_all
 from module.logger import logger
 from module.config.utils import DEFAULT_CONFIG_NAME, alas_instance
-from module.webui.deploy_settings import (
-    deploy_settings_schema,
-    get_startup_run,
-    save_deploy_settings,
-    set_startup_run,
-)
-from module.webui.launcher import is_local_request, launcher_control
-from module.webui.launcher_trust import (
-    TOKEN_TTL_SECONDS,
-    check_secret,
-    enabled as launcher_trust_enabled,
-    issue_token,
-    validate_token,
-    webui_key,
-)
-from module.webui.lang import t
 from module.webui.live_control_protocol import (
     LiveControlCommandError,
     ack_message,

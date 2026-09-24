@@ -1,6 +1,8 @@
 """配置写入与任务立即运行服务。"""
 
 import copy
+import datetime
+import re
 import threading
 from typing import Any
 
@@ -25,7 +27,78 @@ from module.extension_api.types import (
     TaskActionSnapshot,
 )
 from module.logger import logger
-from module.webui.utils import parse_pin_value, re_fullmatch
+
+
+VALUE_CONVERTERS = {
+    "str": str,
+    "float": float,
+    "int": int,
+    "bool": bool,
+    "ignore": lambda value: value,
+}
+
+
+def _parse_single_value(value: Any, value_type: str | None = None) -> Any:
+    if value_type:
+        return VALUE_CONVERTERS[value_type](value)
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return value
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def parse_config_value(
+    value: Any,
+    value_type: str | None = None,
+    widget_type: str | None = None,
+    options: list[Any] | None = None,
+) -> Any:
+    """解析 Janus 配置值，不依赖已移除的旧 WebUI 表单工具。"""
+    if widget_type == "task_priority":
+        return "" if value is None else str(value)
+    if isinstance(value, dict):
+        if "value" not in value:
+            return value
+        return parse_config_value(value["value"], value_type, widget_type, options)
+    if isinstance(value, list):
+        if widget_type == "multiselect":
+            parsed = [_parse_single_value(item, value_type) for item in value]
+            if not options:
+                return parsed
+            option_map = {str(option): option for option in options}
+            return [option_map.get(str(item), item) for item in parsed]
+        if widget_type == "checkbox":
+            return True in value
+        if value_type == "ignore":
+            return False if not value else value
+        if not value:
+            return []
+        if all(isinstance(item, bool) for item in value):
+            return True
+        return value
+    return _parse_single_value(value, value_type)
+
+
+def validate_config_value(rule: Any, value: Any) -> bool:
+    """复用旧表单的范围、日期和正则校验语义。"""
+    if isinstance(rule, list):
+        if len(rule) == 2:
+            try:
+                number = float(value)
+                return float(rule[0]) <= number <= float(rule[1])
+            except (TypeError, ValueError):
+                return False
+        return value in rule
+    if rule == "datetime":
+        try:
+            datetime.datetime.fromisoformat(str(value))
+            return True
+        except ValueError:
+            return False
+    return re.fullmatch(pattern=rule, string=str(value)) is not None
 
 
 class ConfigMutationService:
@@ -141,7 +214,7 @@ class ConfigMutationService:
         definition: dict[str, Any],
     ) -> Any:
         widget_type = str(definition.get("type") or field.widget_type)
-        value = parse_pin_value(
+        value = parse_config_value(
             change.value,
             definition.get("valuetype"),
             widget_type,
@@ -151,7 +224,7 @@ class ConfigMutationService:
             value = definition.get("value")
 
         validation = definition.get("validate")
-        if validation and not re_fullmatch(validation, value):
+        if validation and not validate_config_value(validation, value):
             raise ConfigValidationError(change.path)
 
         option_values = tuple(option.value for option in field.options)

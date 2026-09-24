@@ -14,7 +14,7 @@ from module.logger import logger
 
 def _runtime_update_enabled() -> bool:
     """更新必须由 WebUI 主进程提供重启与依赖同步事件。"""
-    from module.webui.setting import State
+    from module.runtime.setting import State
 
     return State.restart_event is not None and State.dependency_sync_event is not None
 
@@ -41,7 +41,7 @@ class CoreUpdateService:
         enabled_provider: Callable[[], bool] | None = None,
     ) -> None:
         if updater_instance is None:
-            from module.webui.updater import updater
+            from module.runtime.updater import updater
 
             updater_instance = updater
         self.updater = updater_instance
