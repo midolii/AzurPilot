@@ -53,6 +53,10 @@ uv run python gui.py --host 127.0.0.1 --port 22267
 
 `gui.py` 会检查前端源码摘要，缺少产物或源码有变化时自动执行 `npm ci` 和构建。Docker 通过多阶段构建预装静态产物，并在最终镜像中保留 Node.js 24 与 npm；挂载源码或容器内自动更新后，可在启动时重新构建前端。
 
+只把 AzurPilot 作为 Janus 等独立控制台的后端时，可以设置
+`AZURPILOT_API_ONLY=1`。该模式跳过自带 React 前端的构建和 Node.js 检查，仍正常提供
+`/healthz`、`/api/v1/ws`、MCP 及运行时服务；未预先构建静态资源时访问根页面会返回 503。
+
 ## 开发
 
 后端：

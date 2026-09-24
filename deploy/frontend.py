@@ -6,6 +6,14 @@ import subprocess
 from pathlib import Path
 
 
+API_ONLY_ENV = 'AZURPILOT_API_ONLY'
+
+
+def is_api_only_mode():
+    """API-only 模式不构建或要求 AzurPilot 自带前端。"""
+    return os.environ.get(API_ONLY_ENV, '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def npm_command():
     """Windows 直接使用 Node 执行 npm，避免将批处理当作可执行文件。"""
     npm = shutil.which('npm')
@@ -40,6 +48,9 @@ def source_fingerprint(directory):
 def ensure_frontend(root=None):
     """缺少或过期时构建前端；已有对应版本的产物不要求安装 Node。"""
     from module.logger import logger
+    if is_api_only_mode():
+        logger.info(f'已启用 {API_ONLY_ENV}，跳过 React 前端构建')
+        return
     directory = (Path(root) if root else Path(__file__).resolve().parents[1]) / 'frontend'
     marker = directory / 'dist/.source-fingerprint'
     fingerprint = source_fingerprint(directory)

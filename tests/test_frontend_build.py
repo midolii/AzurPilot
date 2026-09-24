@@ -6,10 +6,27 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deploy.frontend import ensure_frontend, npm_command, source_fingerprint
+from deploy.frontend import ensure_frontend, is_api_only_mode, npm_command, source_fingerprint
 
 
 class FrontendBuildTests(unittest.TestCase):
+    def test_api_only_mode_does_not_require_frontend_or_node(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {'AZURPILOT_API_ONLY': 'true'},
+        ), patch('deploy.frontend.npm_command') as command:
+            ensure_frontend(directory)
+            command.assert_not_called()
+
+    def test_api_only_mode_accepts_documented_truthy_values(self):
+        for value in ('1', 'true', 'TRUE', 'yes', 'on'):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {'AZURPILOT_API_ONLY': value},
+                clear=False,
+            ):
+                self.assertTrue(is_api_only_mode())
+
     def test_matching_artifact_does_not_require_node(self):
         with tempfile.TemporaryDirectory() as directory:
             frontend = Path(directory) / 'frontend'
