@@ -89,11 +89,13 @@ def create_app(*, root: Path = ROOT, password=None, manage_runtime=True, mount_m
             return PlainTextResponse('评分报告尚未生成，请先运行「指挥喵评分」任务。', status_code=404)
         return FileResponse(path, media_type='text/html', headers={'Cache-Control': 'no-cache'})
 
+    from module.api.android import routes as android_routes
     routes = [Route('/healthz', health),
               Route('/reports/meowfficer_score', meowfficer_score_report),
               WebSocketRoute('/api/v1/ws', gateway.endpoint)]
+    routes.extend(android_routes(configs, runtime))
     # Janus 使用的扩展 REST/媒体接口继续挂载在同一版本命名空间下。
-    # 原生 WebSocket 路由必须位于 Mount 之前，避免被扩展应用截获。
+    # 原生 WebSocket 和 Android 路由必须位于 Mount 之前，避免被扩展应用截获。
     from module.extension_api.webapi import create_api_app
     routes.append(Mount('/api/v1', create_api_app()))
     if (dist / 'assets').is_dir():
@@ -103,6 +105,11 @@ def create_app(*, root: Path = ROOT, password=None, manage_runtime=True, mount_m
     research_items = root / 'assets' / 'stats' / 'research_items'
     if research_items.is_dir():
         routes.append(Mount('/research-items', StaticFiles(directory=research_items)))
+    # 大世界掉落的物品图标同理。opsi_reward_items 是模板库的超集
+    # （opsi_items 的每个模板名这里都有），挂一个目录就够。
+    opsi_items = root / 'assets' / 'stats' / 'opsi_reward_items'
+    if opsi_items.is_dir():
+        routes.append(Mount('/opsi-items', StaticFiles(directory=opsi_items)))
     if mount_mcp:
         from mcp_server_sse import create_app as create_mcp_app, configure_auth
         configure_auth(password, public_bind=bool(password))
