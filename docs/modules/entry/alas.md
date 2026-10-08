@@ -68,8 +68,8 @@
 
 | 入口 | 用途 |
 | --- | --- |
-| `python alas.py [实例名]` | 命令行入口。不传实例名时用 `DEFAULT_CONFIG_NAME`（`ap`）；实例名经 `parse_config_name()` 校验，非法或不存在时以退出码 2 失败，不会回退到默认实例 |
-| `AzurLaneAutoScript(config_name).loop()` | 主入口。WebUI 经 `ProcessManager` 创建 worker 进程后调用；`python alas.py` 也走这里 |
+| `uv run python alas.py [实例名]` | 命令行入口。不传实例名时用 `DEFAULT_CONFIG_NAME`（`ap`）；实例名经 `parse_config_name()` 校验，非法或不存在时以退出码 2 失败，不会回退到默认实例 |
+| `AzurLaneAutoScript(config_name).loop()` | 主入口。WebUI 经 `ProcessManager` 创建 worker 进程后调用；`uv run python alas.py` 也走这里 |
 | `AzurLaneAutoScript(config_name).run(command, skip_first_screenshot=True)` | 单任务入口。WebUI「立即执行」某任务时跳过调度循环直接运行 |
 | `config.task_call('Restart')` | 跨任务注入入口。业务模块以此请求恢复，效果是把目标任务 `NextRun` 置为现在并强制启用 |
 | `AzurLaneAutoScript.stop_event` | 类属性。WebUI 注入由 `State.manager.Event()` 创建的跨进程事件代理，调度器在轮询点响应停止信号 |
@@ -82,7 +82,7 @@ AUTO-MAS 一类外部调度器把 AzurPilot 当黑箱驱动，只用以下四个
 
 | 面 | 约定 |
 | --- | --- |
-| 启动 | `python alas.py <实例名>`，在 AzurPilot 根目录下创建且已配置的实例 |
+| 启动 | `uv run python alas.py <实例名>`（或在已配置的环境中 `python alas.py <实例名>`），在 AzurPilot 根目录下创建且已配置的实例 |
 | 配置 | 读写 `./config/<实例名>.json`，字段语义归配置系统所有 |
 | 日志 | `get_log_file_path(实例名)` → `./log/{日期}_{实例名}.txt`，当天追加；`[Alas] 调度器: 开始任务/结束任务` 可作任务边界标记 |
 | 停止 | 外部工具终止进程树。调度器不主动退出，也没有停止文件；长跑与卡死恢复由自身机制负责 |
@@ -316,7 +316,15 @@ stateDiagram-v2
 
 终止路径只有四条：`ScriptError` 连续 3 次；敏感任务失败（`_check_sensitive_exit` 或失败计数命中）；`stop_event` 更新信号；配置/设备初始化即失败。其余一切故障都应自动恢复。
 
-**为什么恢复性失败不计入失败次数**：失败计数驱动的是「强制重启模拟器」这类高代价动作。可恢复错误已经各自触发过针对性恢复（重启游戏或模拟器），再累加计数只会让本已自愈的问题被反复升级；同时计数不清零，真正的顽固故障仍会在下一轮 `False` 结果中累积到阈值。
+**为什么恢复性失败不计入失败次数**：失败计数驱动的是「强制重启模拟器」这类高代价动作。可恢复错误已经各自触发过针对性恢复（重启游戏或模拟器），不再通过 `failure_record` 重复升级。
+
+**同一任务连续重启上限**：`Error.TaskRestartLimit` 默认 3，0 表示关闭限制。独立的 `task_restart_record` 累计同一任务未成功的恢复轮次，包含 `'recoverable'`、`False` 和选出任务后的全局异常；该任务成功才清零，其他任务成功或 `Restart` 成功不会清掉原任务计数。达到上限后将故障任务的 `Scheduler.NextRun` 写为服务器下一次零点，发送 `Error.OnePushConfig` 错误推送和 WebUI 提醒，低推送量模式也保留此提醒。其他任务继续调度，本轮冷却也适用于自定义调度卡片和强制任务调用。
+
+`Restart` 是系统恢复入口，豁免该上限，不累计恢复次数，也不受旧冷却记录阻拦。重启失败仍走原有客户端重试或模拟器恢复分支，避免游戏未运行时整个队列依次失败。普通任务在选出后的全局异常中达到上限时，也先尝试重启模拟器并安排 `Restart`，再延后故障任务；正常每日重启排期和随机延后设置保持不变。
+
+敏感任务与 `ScriptError` 的退出规则优先执行。选出任务后的全局异常（包括初始化和收尾阶段）在执行任何恢复或延后前，同样通过 `_check_sensitive_exit()` 检查严格重启模式与该任务的 `Scheduler.Sensitive`，防止绕过敏感任务保护。
+
+恢复次数和强制调用的冷却保护只存于调度器进程内；普通调度的延后时间写入配置，配置重新加载后仍有效。
 
 **为什么主循环捕获一切异常后继续跑**：目标是无人值守 7×24 运行，任何一次未预期异常终止进程，损失的是整个夜间挂机时段；而「重启模拟器 + 注入 Restart」对绝大多数故障都是有效复位。指数退避保证重试有节制，避免在硬故障上打转刷日志。
 

@@ -1,3 +1,7 @@
+/**
+ * @fileoverview 实例资源卡片设置入口与选项弹窗。
+ */
+
 import { useState, useSyncExternalStore } from 'react'
 import { Settings2 } from 'lucide-react'
 import type { Resource } from '../api/types'

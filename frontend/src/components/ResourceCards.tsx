@@ -1,3 +1,7 @@
+/**
+ * @fileoverview 仪表盘资源（石油、物资、魔方等）统计卡片组件。
+ */
+
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Box, GripVertical, Plus, X } from 'lucide-react'
 import type { Resource } from '../api/types'
@@ -5,7 +9,7 @@ import { useApp } from '../app/context'
 import { readDashboardPrefs, subscribeDashboardPrefs } from '../app/dashboardPrefs'
 import type { UiKey } from '../i18n'
 
-export const resourceLabels: Record<string, UiKey> = {Oil: 'resource.Oil', Coin: 'resource.Coin', Gem: 'resource.Gem', Cube: 'resource.Cube', Pt: 'resource.Pt', ActionPoint: 'resource.ActionPoint', YellowCoin: 'resource.YellowCoin', PurpleCoin: 'resource.PurpleCoin', Core: 'resource.Core', Medal: 'resource.Medal', Merit: 'resource.Merit', GuildCoin: 'resource.GuildCoin', Chip: 'resource.Chip'}
+export const resourceLabels: Record<string, UiKey> = {Oil: 'resource.Oil', Coin: 'resource.Coin', Gem: 'resource.Gem', Cube: 'resource.Cube', Pt: 'resource.Pt', ActionPoint: 'resource.ActionPoint', YellowCoin: 'resource.YellowCoin', PurpleCoin: 'resource.PurpleCoin', Core: 'resource.Core', Medal: 'resource.Medal', Merit: 'resource.Merit', GuildCoin: 'resource.GuildCoin', Chip: 'resource.Chip', Distance: 'resource.Distance', ActionAsset: 'resource.ActionAsset'}
 const iconBase = import.meta.env.BASE_URL
 const iconImages: Record<string, string> = {
   Oil: `${iconBase}oil.webp`,
@@ -20,7 +24,9 @@ const iconImages: Record<string, string> = {
   Medal: `${iconBase}honor_medal.webp`,
   Merit: `${iconBase}merit.webp`,
   GuildCoin: `${iconBase}stamina.webp`,
-  Chip: `${iconBase}core_data.webp`,
+  Chip: `${iconBase}cognitive_chips.webp`,
+  Distance: `${iconBase}nautical_miles.webp`,
+  ActionAsset: `${iconBase}action_asset.webp`,
 }
 
 /* 行动力越高换越大的狗图，四档从高到低取第一张命中的；未达第一档不换图。 */
@@ -45,7 +51,7 @@ function ResourceIcon({resourceKey, size = 32, src}: {resourceKey: string; size?
   const imageSrc = src ?? iconImages[resourceKey]
   return imageSrc ? <img className="resource-icon-image" src={imageSrc} alt="" width={size} height={size} draggable={false}/> : <Box size={Math.round(size * .62)}/>
 }
-export const defaultResourceKeys = ['Oil', 'Coin', 'Gem', 'Cube']
+export const defaultResourceKeys = ['Oil', 'Coin', 'Gem', 'Cube', 'Distance', 'ActionAsset']
 
 export function moveResourceKey(keys: string[], fromKey: string, toKey: string): string[] {
   if (fromKey === toKey) return keys
@@ -112,7 +118,7 @@ export function ResourceCards({resources, selected}: {resources: Resource[]; sel
   const {ui} = useApp()
   const prefs = useSyncExternalStore(subscribeDashboardPrefs, readDashboardPrefs, readDashboardPrefs)
   const gridRef = useRef<HTMLDivElement>(null)
-  const mergedRef = useRef<HTMLElement>(null)
+  const mergedRef = useRef<HTMLDivElement>(null)
 
   /* 卡片适应：按容器宽度算一行放得下几张，列数即「卡片数与一排容量」的较小者 ——
      溢出到第二排以后时末排沿用第一排尺寸，总数不足一排时列数就等于卡片数因而仍均分。 */
@@ -161,7 +167,7 @@ export function ResourceCards({resources, selected}: {resources: Resource[]; sel
     prefs.fitText && 'resource-fit-text',
     prefs.dense && 'resource-dense'].filter(Boolean).join(' ')
 
-  /* 通用卡片只换外层容器：两种排法共用这段卡片内部渲染。 */
+  /* 两种排法共用同一段卡片内部渲染，也都套在 .resource-card-body 里——那张二级面。 */
   const cardBody = (entry: typeof entries[number]) => <>
     <div className="resource-heading"><span>{entry.label}</span><div className="resource-image-wrap"><ResourceIcon resourceKey={entry.key} size={32} src={entry.iconSrc}/></div></div>
     <ResourceValue value={entry.displayValue} suffix={entry.suffix}/>
@@ -169,8 +175,12 @@ export function ResourceCards({resources, selected}: {resources: Resource[]; sel
   </>
 
   return <div className={className} ref={gridRef}>{prefs.merged
-    ? <section className="resource-card resource-merged" ref={mergedRef}>{entries.map(entry => <section key={entry.key} className={`resource-card resource-merged-item resource-${entry.index % 4}`}>{cardBody(entry)}</section>)}</section>
-    : entries.map(entry => <section key={entry.key} className={`resource-card resource-${entry.index % 4}`}>{cardBody(entry)}</section>)}</div>
+    ? <section className="resource-card resource-merged">
+      <div className="resource-card-body" ref={mergedRef}>{entries.map(entry => <section key={entry.key} className={`resource-merged-item resource-${entry.index % 4}`}>{cardBody(entry)}</section>)}</div>
+    </section>
+    : entries.map(entry => <section key={entry.key} className={`resource-card resource-${entry.index % 4}`}>
+      <div className="resource-card-body">{cardBody(entry)}</div>
+    </section>)}</div>
 }
 export function ResourceSettings({resources, selected, onChange}: {resources: Resource[]; selected: string[]; onChange: (keys: string[]) => void}) {
   const {ui} = useApp()
@@ -510,7 +520,7 @@ export function ResourceSettings({resources, selected, onChange}: {resources: Re
           }}
           onPointerCancel={event => finishDrag(event.pointerId, false)}>
           <span className="resource-editor-grip" aria-hidden="true"><GripVertical size={16}/></span>
-          <span className="resource-editor-icon resource-editor-icon-image"><ResourceIcon resourceKey={key} size={30} src={dogIcon(key, resources.find(item => item.name === key))}/></span>
+          <span className="resource-editor-icon resource-editor-icon-image"><ResourceIcon resourceKey={key} size={30} src={dogIcon(key, resource)}/></span>
           <span className="resource-editor-label">{label}</span>
           <button type="button" className="resource-editor-remove" aria-label={ui('resource.remove', {label})} title={ui('resource.remove', {label})} onClick={() => remove(key)}><X size={15}/></button>
         </div>

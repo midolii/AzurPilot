@@ -179,6 +179,9 @@ def remove_small_fragments(image, min_height=6, min_area=10, keep_margin=3,
 
 class AmountOcr(Digit):
     MAX_RETRY = 3
+    # 掉落统计按原始小字形逐位校验；商店价格等其他数字场景仍沿用原 OCR。
+    use_digit_templates = False
+    strict_amount_max = False
     # 是否过滤图标边缘碎块。委托收入与自律寻敌奖励场景开启，
     # 战斗掉落统计保持原行为。
     remove_fragments = False
@@ -189,8 +192,8 @@ class AmountOcr(Digit):
     # 右侧数字簇的最大水平间隙（None 关闭）。奖励页图标中的竖笔画
     # 会被误读成数字（如 2 变 12），按间隙阈值把它排除在数字簇外。
     fragment_max_digit_gap = None
-    # 超限兜底时丢首位还是截断末位。图标残影在数字左侧的场景（科研掉落）
-    # 应丢首位：实测「真值 3 被读成 73」时截断末位留下 7（错），丢首位得 3（对）。
+    # 未启用 strict_amount_max 的旧调用方可选择截断方向。
+    # 科研、委托和大世界掉落均拒绝无法确认的超限数量，不使用截断。
     drop_leading_on_overflow = False
 
     def pre_process(self, image):
@@ -214,7 +217,10 @@ class AmountOcr(Digit):
 
     def ocr_with_validation(self, image, item_name=None, direct_ocr=False, trim=True,
                             amount_max=None, amount_default_max=None):
-        """带验证的 OCR 识别，超过最大值时重试最多 3 次，仍无效则截断末位数字。
+        """带验证的数量识别，可先匹配字形；超限重试后按场景处理。
+
+        掉落场景开启 strict_amount_max 时拒绝无法确认的超限读数，避免截断后
+        把另一位数字当作真值。未启用的旧调用方保留原有兜底行为。
 
         首轮读数超过上限时，若启用了碎片过滤（remove_fragments），
         改用「抹灰版」图像（fill_background=True）重试：抹灰能消除
@@ -235,6 +241,21 @@ class AmountOcr(Digit):
             int: 验证后的数量。
         """
         max_val = resolve_amount_max(item_name, amount_max, amount_default_max)
+
+        if self.use_digit_templates:
+            from module.statistics.amount_digits import read_amount_digits
+
+            raw_image = image if direct_ocr else crop(image, self.buttons[0])
+            matched = read_amount_digits(raw_image)
+            if matched is None and max_val <= 10:
+                # 这类数量只可能是 1~9 或 10。右侧单字形可避开紧贴的纸角；
+                # 末位为 0 时匹配器不返回数量，因此不会把真实的 10 削成个位数。
+                matched = read_amount_digits(raw_image[:, -14:])
+            if matched is not None and 0 < matched <= max_val:
+                return matched
+            if matched is not None and matched > max_val and self.strict_amount_max:
+                logger.warning(f'[统计-物品] {item_name} 字形读数 {matched} 超过上限 {max_val}，跳过本格')
+                return 0
 
         if direct_ocr:
             pre_image = self.pre_process(image)
@@ -285,6 +306,11 @@ class AmountOcr(Digit):
             if amount <= max_val:
                 logger.info(f'{item_name} amount validated after {retry + 1} retries: {amount}')
                 return amount
+
+        if self.strict_amount_max and amount > max_val:
+            logger.warning(f'[统计-物品] {item_name} 数量 {amount} 超过上限 {max_val}，'
+                           '本格数量无法确认，保留截图供重放')
+            return 0
 
         if amount > max_val and amount >= 10:
             if self.drop_leading_on_overflow:
@@ -365,6 +391,7 @@ class Item:
 
     @property
     def name(self):
+        """获取物品名称。"""
         return self._name
 
     @name.setter
@@ -384,10 +411,12 @@ class Item:
 
     @property
     def cost(self):
+        """获取商品消耗的货币类型名称。"""
         return self._cost
 
     @cost.setter
     def cost(self, value):
+        """设置商品消耗的货币类型名称，自动去除尾部数字后缀。"""
         if '_' in value:
             pre, suffix = value.rsplit('_', 1)
             if suffix.isdigit():
@@ -395,6 +424,11 @@ class Item:
         self._cost = value
 
     def is_known_item(self):
+        """判断物品是否为已成功识别的已知物品（非默认名或纯数字临时名）。
+
+        Returns:
+            bool: 是已知物品返回 True，否则返回 False。
+        """
         if self.name == 'DefaultItem':
             return False
         elif self.name.isdigit():
@@ -416,10 +450,16 @@ class Item:
         return name
 
     def predict_valid(self):
+        """判断该物品格是否包含有效物品图标。
+
+        Returns:
+            bool: 灰度均值大于阈值返回 True，否则返回 False。
+        """
         return np.mean(rgb2gray(self.image) > 127) > 0.1
 
     @property
     def button(self):
+        """获取物品关联的按钮点击目标区域。"""
         return self._button.button
 
     @property
@@ -432,6 +472,14 @@ class Item:
         return self._button.area
 
     def crop(self, area):
+        """基于当前物品图标左上角相对偏移进行局部裁切。
+
+        Args:
+            area (tuple): 相对物品左上角的 (x1, y1, x2, y2) 区域。
+
+        Returns:
+            np.ndarray: 裁切后的图像。
+        """
         return crop(self.image_raw, area_offset(area, offset=self._button.area[:2]))
 
     def __eq__(self, other):
@@ -567,8 +615,12 @@ class ItemGrid:
         """
         return names, similarity
 
+    def template_similarity_for(self, name, similarity):
+        """取单个候选的阈值，允许子类仅放宽受动画影响的物品。"""
+        return similarity
+
     def match_template(self, image, similarity=None):
-        """匹配物品模板，优先尝试命中频率最高的模板。
+        """优先取达到阈值的已知物品，再匹配临时未知模板。
 
         未匹配到已有模板时，会自动创建新模板并分配递增 ID。
 
@@ -589,12 +641,16 @@ class ItemGrid:
         names = [name for name in names if not name.isdigit()] + [name for name in names if name.isdigit()]
         names, similarity = self.match_candidates(image, names, similarity)
         best_name = None
-        best_similarity = similarity
+        best_similarity = -1
         for name in names:
+            # 临时模板可能来自前一张的缩放动画，与当前图逐像素更接近。
+            # 已知模板达到门槛后不让它被未知编号覆盖，否则复用解析器会漏算。
+            if name.isdigit() and best_name is not None:
+                break
             if color_similar(color1=color, color2=self.colors[name], threshold=30):
                 res = cv2.matchTemplate(image, self.templates[name], cv2.TM_CCOEFF_NORMED)
                 _, current_similarity, _, _ = cv2.minMaxLoc(res)
-                if current_similarity > best_similarity:
+                if current_similarity > self.template_similarity_for(name, similarity) and current_similarity > best_similarity:
                     best_name = name
                     best_similarity = current_similarity
 

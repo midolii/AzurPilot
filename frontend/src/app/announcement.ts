@@ -1,3 +1,7 @@
+/**
+ * @fileoverview 系统公告拉取、未读状态管理与轮询订阅。
+ */
+
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { api } from '../api/client'
 import type { Announcement } from '../api/types'
@@ -88,7 +92,7 @@ export function markAnnouncementAsRead() {
 
 export function useAnnouncement() {
   const connection = useConnection()
-  const state = useSyncExternalStore(subscribeAnnouncement, getAnnouncementSnapshot)
+  const state = useSyncExternalStore(subscribeAnnouncement, getAnnouncementSnapshot, getAnnouncementSnapshot)
 
   useEffect(() => {
     if (connection !== 'ready') return
