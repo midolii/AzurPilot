@@ -70,7 +70,7 @@ module/island_farm/ 等 16 个目录  # 薄壳：仅 button_extract 生成的 as
 | 组件 | 基类 | 职责 |
 | --- | --- | --- |
 | `Island` | `SelectCharacter` | 岛屿全局基类：`goto_management`/`goto_postmanage`/`island_map_goto`、岗位详情状态机（`post_open`/`post_get_and_add`/`confirm_post_add_order`）、`select_product`（滑动选品）、材料 OCR 与商店补货（`ensure_select_product_material`）、`warehouse_filter`、`buy_shop_item` |
-| `SelectCharacter` | `UI` | 角色网格（前两行）身份/工作/选中状态识别，`WorkerJuu` 体力无限兜底，滚动列表严格查找 |
+| `SelectCharacter` | `UI` | 角色网格（前两行）身份/工作/选中状态识别，`WorkerJuu` 体力无限兜底；角色选择器自行等待筛选界面稳定并完成体力排序，再查找默认位于列表末尾的 `WorkerJuu` |
 | `WarehouseOCR` | — | 6x2 仓库网格上按模板定位物品并 OCR 数量（`ocr_item_quantity`） |
 | `IslandShopBase` | `Island, WarehouseOCR` | 店铺框架：`Meal1~8` 槽位需求、套餐分解、保留线排产、循环填岗 |
 | `IslandUI` | `UI` | 岛屿手机页的运输/管理入口，覆盖 `ui_additional` 处理维护公告与信息弹窗 |
@@ -102,7 +102,7 @@ module/island_farm/ 等 16 个目录  # 薄壳：仅 button_extract 生成的 as
 3. 库存与阈值比较生成补种/补产列表（季节限定产品按当季过滤），扣除在产岗位需求；
 4. `goto_postmanage()` 进入岗位管理，`post_manage_mode` 切到生产页签（必要时按 `post_manage_swipe_count` 上下滑动定位岗位列表）；
 5. 逐岗位 `post_open` 打开详情：完成→收取，工作中→记录产品与 `Duration` OCR 的剩余时间，空闲→进入派遣流程；
-6. 派遣走固定顺序：点空岗 → `ISLAND_SELECT_CHARACTER_CHECK` 时按角色筛选器 `select_character`（体力不足时自动切「工作速度」排序并回退 `WorkerJuu`）→ `ISLAND_SELECT_PRODUCT_CHECK` 时 `select_product` 选中产品，`ensure_select_product_material` 发现种子/鱼苗/饲料不足则跳转对应商店页签补买后重来 → `POST_MAX` + `POST_ADD_ORDER` 确认；
+6. 派遣走固定顺序：点空岗 → `ISLAND_SELECT_CHARACTER_CHECK` 时按角色筛选器 `select_character`（切换体力排序后查找 `WorkerJuu`；筛选按钮、弹窗和列表刷新由共享选择器超时重试）→ `ISLAND_SELECT_PRODUCT_CHECK` 时 `select_product` 选中产品，`ensure_select_product_material` 发现种子/鱼苗/饲料不足则跳转对应商店页签补买后重来 → `POST_MAX` + `POST_ADD_ORDER` 确认；
 7. 全部安排完成后，把所有岗位完成时间与 6 小时兜底值取最小，`config.task_delay(target=...)` 预约下次运行。
 
 ### 店铺排产（IslandShopBase）
@@ -123,7 +123,7 @@ flowchart TD
     K[排产零产出时:<br>严格模式 check_materials → force_skip] -.-> F
 ```
 
-排产的核心约束：每个岗位单次最多生产 `POST_PRODUCE_LIMIT`（约 7）个；填岗循环最多 `_MAX_FILL_LOOP`（10）轮；套餐（`meal_compositions`）下单时实时 `deduct_materials` 扣减原料账目；「保留线」记录已处理槽位的最高目标，防止套餐把尚未达标产品的保底库存当原料吃掉。排产多次失败时先切严格模式（真零库存才跳过），仍失败则把缺口产品加入 `force_skip` 本轮不再停留。
+排产的核心约束：每个岗位单次最多生产 `POST_PRODUCE_LIMIT`（约 7）个；填岗循环最多 `_MAX_FILL_LOOP`（10）轮；套餐（`meal_compositions`）下单时实时 `deduct_materials` 扣减原料账目；「保留线」记录已处理槽位的最高目标，原料库存低于目标时禁止作为套餐原料，达到目标后允许先消耗并由套餐分解补回。排产多次失败时先切严格模式（真零库存才跳过），仍失败则把缺口产品加入 `force_skip` 本轮不再停留。
 
 ### 子玩法速览
 
@@ -221,8 +221,24 @@ stateDiagram-v2
 | `IslandDailyOrder.RejectFilter` / `RejectCount` | 文本/数值 | "Cheese > Tofu" / 0 | 订单驳回条件与运行时计数 |
 | `IslandPearlSell.BuyPrice` / `SellPrice` / `DailyPriceRefresh` | 数值/checkbox | 200 / 1000 / false | 珍珠交易价格阈值与每日刷新开关 |
 | `IslandCargoPreparation.Blacklist` | 文件串 | "Milk" | 货物黑名单（当前仅支持 Milk） |
+| `IslandPlan.IslandWalk.*` | 多行文本（走位规则） | 见 `module/island/island_walk.py` | 每条路线的走位规则，如 `up 3000, right 800, jump`（对所有控制方式生效）；`<路线>Enable` 勾选后由「全局配置」任务走一遍做校验 |
 
 关联关系：季节是唯一贯穿所有模块的横切配置，由 `SeasonConfig` 在各任务 `__init__` 时读取并缓存；店铺类任务的 `Meal{i}`+`MealNumber{i}` 成对声明 8 个排产槽位；`WorkerFilter`/`ChefFilter` 均为 `>` 分隔的角色优先级串，`WorkerJuu`（工作啾）作为通用回退。
+
+走位规则的入口是岛屿计划的全局配置页（任务名「全局配置」，配置段 `IslandPlan.IslandWalk`）：
+`IslandWalk.<路线>` 是规则字符串（`up 3000` 整数按毫秒，`3.0` / `1.5s` 按秒；`jump` 只点一次跳跃；
+`switch` 是切换到啾咖啡餐厅，即布莱梅路线中间那一步），`IslandWalk.<路线>Enable` 是该校验开关。
+`module/island/island_walk.py` 集中维护 17 条路线的默认规则（磨坊路线与地图跳转强绑定、长度也短，保持写死在 `goto_mill()`），`island_walk_steps()` 对所有控制方式
+都读配置，规则为空或非法时回退默认值，时长越界夹到 0.1~20 秒（桥接 swipe 的位移随负载漂移，
+按机器各配一套规则最稳）。
+
+两条例外路线因为中间夹着别的操作，不能整条用规则表达：`AirDropRetry`（补滑）在每步之后都要检测
+补给是否到手，方向固定为上 → 右 → 下，配置只按位置取 3 个时长，个数不符时回退默认值；
+`DailyBulaimei` 的中间动作已抽成规则里的 `switch` 一步，所以它和其它路线一样可整条配置。
+
+「全局配置」任务本身是可运行的：勾选若干 `<路线>Enable` 后运行它，会在岛屿场景里把每条勾选的路线
+各走一遍（供人工核对落点），跑完把任务推迟到第二天；一条都没勾选时同样直接推迟到第二天，
+避免同一天反复执行。
 
 ## 11. 异常与错误处理
 
@@ -269,7 +285,7 @@ stateDiagram-v2
 
 ## 17. 已知限制
 
-- 所有坐标、路线（`island_up(3000)` 等长按序列）与固定坐标选品均按 1280×720 实测写死，游戏改版需重新校准。
+- 所有坐标、路线默认值（`module/island/island_walk.py` 的方向+时长序列）与固定坐标选品均按 1280×720 实测写死，游戏改版需重新校准；`IslandPlan.IslandWalk.<路线>` 可以整条覆盖规则（含方向顺序与时长），对所有控制方式生效。
 - `SEASONAL_ITEMS` 中冬季为空、代码保留的 `'none'` 季节分支在当前配置选项下不可达；赛季迭代（新季节物品上线）完全依赖手动维护代码。
 - 制造业部分季节物品（夏季茉莉精油、秋季花束）在季节表中保留但有意不配置制作；`filter_element` 复用了 `TEMPLATE_FILE_CABINET` 模板（资源未单独提取），为已知的临时妥协。
 - 货物黑名单目前只实现了 Milk 一种识别模板。
@@ -281,6 +297,7 @@ stateDiagram-v2
 - 离线测试：`uv run python -m unittest tests.test_island_shop_production` 用假 UI 驱动六类店铺的真实排产/配方逻辑，改 `island_shop_base.py` 后应先跑它。
 - 单玩法冒烟：多数模块文件底部保留 `if __name__ == '__main__'` 块（如 `IslandFarm.test()` 只跑仓库 OCR），可在模拟器在线时定点复现。
 - 卡死排查顺序：先看最后一行 `[岛屿-xxx]` 警告（提示哪个超时分支），再查对应按钮资源在当前服务器 `assets/<server>/island*/` 是否存在、坐标是否漂移。
+- 走位调参：在「全局配置」页改对应路线的规则（如 `right 4600, up 5100, right 1100`），勾上同名「校验」项，启用并运行一次该任务即可把这条路线走一遍核对落点；日志会打印 `[岛屿走位] <路线>: <规则>` 与每条路线的执行小节。真机/云手机上注意每次 App 重启后虚拟屏 id 会变化，走位依赖的桥接会短暂不可用。
 
 ## 20. 相关模块
 

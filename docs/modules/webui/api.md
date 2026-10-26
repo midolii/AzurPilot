@@ -1,5 +1,9 @@
 # API 服务（module/api）
 
+Quick Tunnel 配对新增 `remote.pair.create`、`remote.pair.status`、`remote.clients` 与
+`remote.revoke`，均沿用认证后的 `/api/v1/ws`，参数契约由生成器维护。
+独立配对凭据支持 `auth.login`；撤销在下一次请求或心跳生效，见 [远程访问](remote-access.md)。
+
 > WebUI 的后端服务：一个 Starlette ASGI 应用把 React 静态资源、同源 WebSocket 业务通道与 MCP SSE 子应用组装进同一进程；业务数据全部经 v1 信封走单一 WebSocket，HTTP 只保留静态资源、健康检查与一份自包含报告页。
 
 ## 1. 模块概述
@@ -115,6 +119,10 @@ module/api/
 ### RuntimeService（runtime_service.py）
 
 把 `ProcessManager` 的进程世界翻译成前端视图：`STATES = {1: running, 2: stopped, 3: error, 4: updating}` 是进程状态与前端枚举的唯一映射；`logs()` 用对象身份匹配 `renderables` 的裁剪重叠区，保证游标单调递增；`capture()` 只读 `preview.hub` 的最新帧，**绝不主动触发截图**。
+
+`instances()` 保留 `server` 字段作为 `Emulator.ServerName` 开服检测配置，同时提供 `region` 作为游戏地区。
+地区复用 `to_server(Emulator.PackageName)`；包名未配置或为 `auto` 时返回 `null`，等待设备检测。
+需要判断国服功能是否可用的页面应读取 `region`，不能把可关闭的开服检测配置当作游戏地区。
 
 `overview()` 枚举任务时跳过非字典根节点，例如内部身份 `_stockInstance`。该字段仍由 `ConfigService.read()` 保留，不能当作任务参数组；总览请求、订阅推送以及启停后返回的总览共用这一读取路径。
 
@@ -344,6 +352,8 @@ lifespan 关闭（顺序有讲究，测试固化）：
 - **SPA 回退只对无后缀 404 生效**：缺失的 `.js`/图片必须返回真实 404，否则错误页会被当作 JS 执行；`.开头` 的路径段（构建指纹等）永远 404。
 - **`config.patch` 的 revision 只是兼容参数**：字段赋值合并到锁内最新快照，不因旧 revision 拒绝写入；但 `delete` 仍校验 revision 防误删。改这块要同时看 `module/config/transaction.py` 与运行器的待写字段机制。
 - **读操作不得触发配置写回**：`ConfigService.read` 若发现磁盘配置与模板合并后有差异，只在内存补齐，不落盘——迁移写回是核心运行器的职责。
+- **活动候选按实例隔离**：读取与运行器共用 `refresh_campaign_events()` 刷新旧活动；`config.get/patch` 在 `options` 中按字段路径返回包名所属地区的候选。任务页面优先使用此映射，保存时以同批最终包名拒绝跨服选择，不修改共享 schema 或全局服务器。详见 [配置系统](../config.md) 的活动候选说明。
+- META 的 `OneHitMode → AssistRequestLimit` 在只读合并时复用核心纯转换函数，旧 `true/false` 显示为 `0/-1`，已有新值优先。读取不改磁盘；用户之后保存新字段时才由配置事务落盘。求援断点 `AssistRequestState` 隐藏且不可通过 API 编辑。
 - **实例名规则与上游一致**：`config/` 下除 `template` 外任何含 `Alas` 段的 `*.json` 都算实例；收紧 `validate_name` 会让上游认可的名字在 WebUI 里消失。
 - **`preview.capture` 与 `preview` topic 都只读 hub**：任何「顺手截一张」的改动都会让浏览器流量变成设备负载，破坏 7×24 运行假设。
 - **错误详情不回显输入**：`ValidationError` 的 details 只含 loc/type；新增错误分支时保持这一约定。
@@ -400,7 +410,8 @@ ws.send_json({'v':1,'type':'request','id':'2','method':'events.subscribe',
 ## 19. 调试方法
 
 - **健康检查**：`GET /healthz` 应返回 `{'status': 'ok', 'protocolVersion': 1}`；`GET /` 返回 503 说明前端未构建（在 `frontend/` 执行 `npm ci && npm run build`）。
-- **启动器通道**：`/api/launcher/{status,startup,stream,report,trusted-login}` 与 `/launcher-login` 只服务外部启动器，全部限定本机回环，非本机一律 403（控制台的启动器卡片读同一组端点，远端访问时即显示「只能在本机 WebUI 中设置」）。
+- **启动器通道**：启动器主动连接本机后端的 `/api/v2/launcher/ws`，用独立信任密钥完成握手；同一条连接承载命令、通知、状态和一次性登录票据。页面通过现有业务 WS 的 `launcher.*` 方法与 `launcher` 全局主题访问后端，仅允许本机直连。完整格式见 [启动器 WS v2](launcher-protocol-v2.md)。
+- **任务通知**：本机任务 POST `/api/v2/internal/notifications`，后端同时广播到浏览器 notifications 主题和启动器 WS；启动器通知有界缓存并按 ID 确认。旧启动器 HTTP/SSE 路径明确返回 404。
 - **单测夹具**：`create_app(root=临时目录, password='...', manage_runtime=False, mount_mcp=False)` 是标准隔离模式，见 `tests/test_api.py` 的 `fixture()`。相关模块：`tests.test_api`（协议/认证/配置事务）、`tests.test_api_lifecycle`（真实 Manager 生命周期）、`tests.test_api_mcp_integration`（MCP 挂载与关闭顺序）、`tests.test_frontend_static`（MIME 与 SPA 回退）。
 - **契约差异**：前端类型对不上时先跑 `uv run python -m dev_tools.export_api_schema` 看 diff，再查是不是手改了生成物。
 - **日志**：业务异常在服务日志中带 `WebSocket API 执行失败` 标题（含完整堆栈）；订阅异常有 `订阅数据读取失败`。客户端只会看到无堆栈的 `INTERNAL_ERROR`。

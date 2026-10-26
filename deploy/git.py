@@ -1,17 +1,29 @@
 import random
+import subprocess
 import time
+from typing import Optional
 
 import requests
 
-from deploy.config import DeployConfig, ExecutionError
+from deploy.config import GIT_OVER_CDN_FALLBACK_REPOSITORIES, DeployConfig, ExecutionError
 from deploy.git_over_cdn.client import GitOverCdnClient
 from deploy.git_over_cdn.endpoints import CLOUDFLARE_UPDATE_URLS, FALLBACK_UPDATE_URLS
 from deploy.logger import logger
 from deploy.utils import *
 
 
-CLOUD_UPDATE_CONTROL_URL = 'https://alas-apiv2.nanoda.work/api/updata'
 CLOUD_FORCE_UPDATE_CONTROL_URL = 'https://alas-apiv2.nanoda.work/api/force_update'
+
+
+def peer_fallback_repository(url: str) -> Optional[str]:
+    """若当前 URL 为备选国内镜像，获取列表中的同级备用镜像 URL 用于分流容灾。"""
+    if not url:
+        return None
+    cleaned = url.strip().rstrip('/').removesuffix('.git')
+    for index, repo in enumerate(GIT_OVER_CDN_FALLBACK_REPOSITORIES):
+        if cleaned == repo.rstrip('/'):
+            return GIT_OVER_CDN_FALLBACK_REPOSITORIES[(index + 1) % len(GIT_OVER_CDN_FALLBACK_REPOSITORIES)]
+    return None
 
 
 class GitManager(DeployConfig):
@@ -70,11 +82,25 @@ class GitManager(DeployConfig):
                 break
         return ua
 
-    def _fetch_with_retry(self, source, branch, max_retry=5, delay=2):
-        """带 UA 重试的 git fetch。
+    def get_remote_url(self, source: str) -> str:
+        """获取指定远程源的 URL。"""
+        try:
+            res = subprocess.run(
+                [self.git, 'remote', 'get-url', source],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return res.stdout.strip() if res.returncode == 0 else ''
+        except Exception:
+            return ''
 
-        gitcode 等仓库会返回 418 拦截特定 UA，此时自动更换 UA 重试。
-        不需要遍历 init/config/remote——那些不涉及 HTTP 请求。
+    def _fetch_with_retry(self, source, branch, max_retry=5, delay=2):
+        """带 UA 重试与同级镜像容灾的 git fetch。
+
+        gitcode 等仓库会返回 418 拦截特定 UA，此时自动更换 UA 重试；
+        若多次重试仍失败且当前 remote 为国内镜像源（如 GitCode/CNB），
+        自动切换至同级备用分流镜像重试，避免单一仓库受风控导致更新中断。
 
         Args:
             source: 远程源名称。
@@ -96,6 +122,27 @@ class GitManager(DeployConfig):
                 # 重试间隔加随机抖动，避免暴露固定的失败-重试节奏
                 time.sleep(delay * random.uniform(0.5, 1.8))
                 ua = self.git_user_agent()
+
+        current_url = self.get_remote_url(source)
+        peer_url = peer_fallback_repository(current_url)
+        if peer_url:
+            logger.warning(
+                f'当前镜像源 {current_url} 获取失败（可能触发限流或风控），自动切换至同级分流镜像 {peer_url} 重试'
+            )
+            git = f'"{self.git}" -c http.userAgent={self.git_user_agent()}'
+            if self.execute(f'{git} remote set-url {source} {peer_url}', allow_failure=True):
+                if hasattr(self, 'Repository'):
+                    self.Repository = peer_url
+                ua = self.git_user_agent()
+                for i in range(max_retry):
+                    git = f'"{self.git}" -c http.userAgent={ua}'
+                    logger.info(f'Use git User-Agent: {ua}')
+                    if self.execute(f'{git} fetch {source} {branch}'):
+                        return
+                    logger.warning(f'备用镜像 git fetch 失败 (UA: {ua}), 尝试 {i + 1}/{max_retry}')
+                    if i < max_retry - 1:
+                        time.sleep(delay * random.uniform(0.5, 1.8))
+                        ua = self.git_user_agent()
         raise ExecutionError
 
     def git_repository_init(
@@ -177,37 +224,6 @@ class GitManager(DeployConfig):
         return client
 
     @staticmethod
-    def cloud_auto_update_enabled():
-        """检查云端自动更新开关是否启用。
-
-        Returns:
-            bool | None: True 启用，False 禁用，网络异常返回 None。
-        """
-        logger.info(f'Check cloud update control: {CLOUD_UPDATE_CONTROL_URL}')
-        try:
-            resp = requests.get(CLOUD_UPDATE_CONTROL_URL, timeout=5, headers={'User-Agent': 'alas AzurPilot'})
-            resp.raise_for_status()
-        except Exception as e:
-            logger.warning(f'Failed to check cloud update control: {e}')
-            return None
-
-        text = resp.text.strip()
-        try:
-            data = resp.json()
-        except ValueError:
-            data = text
-
-        if data is True or (isinstance(data, str) and data.lower() in ('true', 'ture')):
-            logger.info('Cloud update control is enabled')
-            return True
-        if data is False or (isinstance(data, str) and data.lower() in ('false', 'fales')):
-            logger.info('Cloud update control is disabled')
-            return False
-
-        logger.info(f'Cloud update control is inaccessible: {text}')
-        return None
-
-    @staticmethod
     def cloud_force_update_enabled():
         """检查云端强制更新开关是否启用。
 
@@ -242,32 +258,9 @@ class GitManager(DeployConfig):
         logger.info(f'Cloud update control is inaccessible: {text}')
         return None
 
-    def cloud_update_access_failed(self, fatal=True):
-        """处理云端更新控制接口访问失败的情形。
-
-        Args:
-            fatal (bool): 是否视为致命错误并终止启动。
-
-        Raises:
-            ExecutionError: 当 fatal 为 True 时抛出。
-        """
-        logger.hr('Cloud Update Control Failed', 0)
-        if fatal:
-            logger.warning('Failed to access cloud update control, stopping startup')
-            raise ExecutionError
-        else:
-            logger.warning('Failed to access cloud update control, skip update check')
-
     def git_install(self):
-        """根据云端状态与本地配置执行 Git 源码拉取与更新。"""
+        """根据本地配置执行 Git 源码拉取与更新。"""
         logger.hr('Update AzurPilot', 0)
-
-        cloud_update = self.cloud_auto_update_enabled()
-        if cloud_update is None:
-            self.cloud_update_access_failed()
-        if not cloud_update:
-            logger.info('Cloud update control disabled, skip')
-            return
 
         if self.GitOverCdn:
             if self.goc_client.update():

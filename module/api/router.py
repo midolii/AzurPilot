@@ -5,9 +5,11 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 
+from module.persistence.database import configured_database
 from module.api import background_service as background
 from module.api import protocol as p
 from module.api import search_service as search
+from module.api import remote_service as remote
 from module.runtime.process_manager import ProcessManager
 
 
@@ -19,10 +21,12 @@ class Method:
         params: 参数校验模型类型。
         handler: 请求处理函数或方法。
         mutates: 是否会修改系统状态或运行任务。
+        local_only: 是否要求本机直连来源上下文。
     """
     params: type[p.Params]
     handler: Callable
     mutates: bool = False
+    local_only: bool = False
 
 
 class Router:
@@ -39,6 +43,9 @@ class Router:
             runtime: 运行时管理服务实例。
         """
         self.configs, self.runtime = configs, runtime
+        from module.runtime.launcher import LauncherService
+        from module.runtime.launcher_trust import TRUST_SECRET_ENV
+        self.launcher = LauncherService(os.environ.get(TRUST_SECRET_ENV))
         self._accounts = None
         self._scheduler_programs = None
         self._opsi_simulator = None
@@ -48,6 +55,11 @@ class Router:
         self.access_password = ''
         self.background_token = secrets.token_urlsafe(32)
         self.methods = {
+            'launcher.status': Method(p.Params, lambda _: self.launcher.status(), local_only=True),
+            'launcher.autostart.set': Method(p.LauncherAutostartParams,
+                                            lambda x: self.launcher.set_autostart(x.enabled), True, True),
+            'launcher.command.get': Method(p.LauncherCommandParams,
+                                          lambda x: self.launcher.command(x.commandId), local_only=True),
             'system.ping': Method(p.Params, lambda _: {'pong': True}),
             'schema.get': Method(p.SchemaParams, lambda x: configs.schema(x.language)),
             'search.content': Method(p.SearchContentParams, lambda x: search.search_content(x.query)),
@@ -60,6 +72,17 @@ class Router:
             'config.export': Method(p.InstanceParams, lambda x: configs.export(x.instance)),
             'config.patch': Method(p.PatchParams, lambda x: configs.patch(x.instance, x.revision, x.changes), True),
             'overview.get': Method(p.InstanceParams, lambda x: runtime.overview(x.instance)),
+            'mind.catalog': Method(p.InstanceParams, lambda x: self.mind.catalog(x.instance)),
+            'fleetTech.catalog': Method(p.InstanceParams, lambda x: self.fleet_tech.catalog(x.instance)),
+            'fleetTech.report': Method(p.InstanceParams, lambda x: self.fleet_tech.report(x.instance)),
+            'fleetTech.syncMind': Method(p.InstanceParams, lambda x: self.fleet_tech.sync_mind(x.instance), True),
+            'fleetTech.patch': Method(p.FleetTechPatchParams, lambda x: self.fleet_tech.patch(x.instance, x.revision, x.changes, x.nations), True),
+            'mind.report': Method(p.InstanceParams, lambda x: self.mind.report(x.instance)),
+            'mind.calculate': Method(p.MindCalculateParams, lambda x: self.mind.calculate(x.instance, [ship.model_dump() for ship in x.ships])),
+            'mind.save': Method(p.MindSaveParams, lambda x: self.mind.save(x.instance, x.revision, [ship.model_dump() for ship in x.ships]), True),
+            'mind.import': Method(p.MindFileParams, lambda x: self.mind.import_file(x.instance, x.filename, x.content)),
+            'mind.recognize': Method(p.MindFileParams, lambda x: self.mind.recognize(x.instance, x.filename, x.content)),
+            'mind.export': Method(p.MindExportParams, lambda x: self.mind.export(x.instance, x.format)),
             'stock.status': Method(p.InstanceParams, lambda x: self.stock_exchange.status(x.instance)),
             'stock.rebuild': Method(p.StockRebuildParams, lambda x: self.stock_exchange.rebuild(x.instance, x.confirm, x.scope), True),
             'stock.request': Method(p.StockRequestParams, lambda x: self.stock_exchange.request(x.instance, x.path, x.method, x.body, x.etag), True),
@@ -87,6 +110,10 @@ class Router:
                                              self.meowfficer_clear_report, True),
             'statistics.resources': Method(p.StatisticsParams, lambda x: runtime.statistics(x.instance, x.days, x.resource)),
             'settings.get': Method(p.Params, self.settings),
+            'remote.pair.create': Method(p.Params, lambda _: remote.create_pairing(), True),
+            'remote.pair.status': Method(p.RemotePairingParams, lambda x: remote.pairing_status(x.id)),
+            'remote.clients': Method(p.Params, lambda _: remote.clients()),
+            'remote.revoke': Method(p.RemoteClientParams, lambda x: remote.revoke(x.id), True),
             'settings.patch': Method(p.DeployParams, self.save_settings, True),
             'startup.get': Method(p.InstanceParams, self.get_startup),
             'startup.set': Method(p.StartupParams, self.set_startup, True),
@@ -107,6 +134,16 @@ class Router:
                                                     lambda x: {'removed': background.gallery_remove(x.id)}, True),
             'background.gallery.open': Method(p.Params, lambda _: background.gallery_open(), True),
         }
+
+    @property
+    def fleet_tech(self):
+        from module.api.fleet_tech_service import FleetTechService
+        return FleetTechService(self.configs)
+
+    @property
+    def mind(self):
+        from module.api.mind_calculator_service import MindCalculatorService
+        return MindCalculatorService(self.configs)
 
     @property
     def opsi_simulator(self):
@@ -203,7 +240,8 @@ class Router:
         from module.api.statistics_service import compact_axis, report
         result = report(self.configs, params.instance, params.category, params.month,
                         params.days, params.period, research_series=params.series,
-                        research_scope=params.scope, loot_task=params.task)
+                        research_scope=params.scope, loot_task=params.task,
+                        include_series=params.include_series)
         return {**result, **compact_axis(result.get('series') or [])}
 
     def resource_flows(self, params: p.ResourceFlowsParams):
@@ -235,7 +273,8 @@ class Router:
         from module.api.meowfficer_service import clear
         return clear(self.configs, params.instance)
 
-    def dispatch(self, method: str, params: dict):
+    @configured_database
+    def dispatch(self, method: str, params: dict, *, local=False):
         """分发并执行指定的 API 方法。
 
         Args:
@@ -252,6 +291,8 @@ class Router:
         entry = self.methods.get(method)
         if entry is None:
             raise p.ApiError('METHOD_NOT_FOUND', '未知 API 方法')
+        if entry.local_only and not local:
+            raise p.ApiError('LOCAL_ONLY', '启动器控制只允许本机直连')
         validated = entry.params.model_validate(params)
         if entry.mutates and os.environ.get('DEMO') == '1':
             raise p.ApiError('READ_ONLY', '演示模式下禁止修改配置或运行任务')

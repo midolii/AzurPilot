@@ -5,11 +5,15 @@ OCR、伤害输出识别、META 战斗状态页面的检测与导航、奖励
 领取、以及自动搜索可用信标并发起挑战的完整战斗流程。
 """
 import re
+from datetime import datetime, timedelta
 from enum import Enum
 
 import module.config.server as server
+from module.base.decorator import cached_property
 from module.base.timer import Timer
 from module.combat.combat import BATTLE_PREPARATION
+from module.config.config import TaskEnd
+from module.config.time_source import now as current_time
 from module.logger import logger
 from module.meta_reward.meta_reward import MetaReward
 from module.ocr.ocr import Digit, DigitCounter
@@ -122,9 +126,147 @@ class Meta(UI, MapEventHandler):
             return True
         return False
 
+    @cached_property
+    def ash_combat(self):
+        """复用同一个 AshCombat 实例，跨多场战斗保持战前/战后装备状态。"""
+        return AshCombat(config=self.config, device=self.device)
+
+    def _in_meta_page(self):
+        """判断当前是否在 META 相关页面（主页面、信标或档案）。
+
+        Returns:
+            bool: 是否在 META 相关页面。
+        """
+        return self.appear(ASH_SHOWDOWN, offset=(30, 30)) \
+               or self.appear(BEACON_LIST, offset=(20, 20)) \
+               or self.appear(DOSSIER_LIST, offset=(20, 20))
+
+    def _in_meta_assist_page(self):
+        """判断当前是否在信标协助页面。
+
+        Returns:
+            bool: 是否在信标协助页面。
+        """
+        return self.appear(BEACON_MY, offset=(20, 20))
+
+    def handle_ash_equipment_after(self, skip_first_screenshot=True):
+        """在 META 出击全部结束后，进入战斗准备界面恢复战后装备并退回。
+
+        普通信标显示模拟战斗时，确认模拟入口后借用同一编队恢复装备。
+
+        Args:
+            skip_first_screenshot (bool): 是否跳过首次截图。默认 True。
+
+        Returns:
+            bool: 是否完成了战后装备恢复。
+
+        Pages:
+            in: META 主页面、信标页、档案页、协助页或战斗准备页
+            out: 信标页或 META 主页面；协助任务返回协助页
+        """
+        # 最后一场可能是档案战斗，但此前普通信标的装备仍然需要恢复。
+        if not self.ash_combat.equipment_handle_before_flag:
+            return False
+
+        logger.hr('META战后装备恢复', level=2)
+        timeout = Timer(15, count=30).start()
+        fallback_from = None
+        simulate_requested = False
+
+        while 1:
+            if skip_first_screenshot:
+                skip_first_screenshot = False
+            else:
+                self.device.screenshot()
+
+            if self.appear(BATTLE_PREPARATION, offset=(30, 30)):
+                if self.ash_combat.is_dossier:
+                    if self.appear(BATTLE_PREPARATION, offset=(30, 30), interval=2):
+                        self.device.click(BACK_ARROW)
+                    continue
+                break
+            if timeout.reached():
+                logger.warning('[META作战] 无法进入战斗准备页面恢复装备，跳过战后换装')
+                return False
+
+            if simulate_requested and self.handle_popup_confirm('META_EQUIPMENT_SIMULATE'):
+                continue
+
+            if self.appear(ASH_SHOWDOWN, offset=(30, 30), interval=2):
+                self.device.click(META_MAIN_BEACON_ENTRANCE)
+                continue
+
+            # 档案使用独立编队，必须先返回普通信标，不能借用档案出击入口。
+            if self.appear(DOSSIER_LIST, offset=(20, 20)):
+                self.appear_then_click(ASH_QUIT, offset=(10, 10), interval=2)
+                continue
+
+            # 支援列表为空，或已显示出击入口但次数耗尽，才借用「我的信标」。
+            if self.appear(BEACON_MY, offset=(20, 20)):
+                self.ash_combat.is_dossier = False
+                if self.appear(BEACON_EMPTY, offset=(20, 20)) or (
+                        self.appear(ASH_START, offset=(30, 30))
+                        and not self.digit_ocr_point_and_check(BEACON_REMAIN, 1)):
+                    if fallback_from == 'beacon':
+                        logger.warning('[META作战] 无法进入战斗准备页面恢复装备，跳过战后换装')
+                        return False
+                    fallback_from = 'assist'
+                    self.appear_then_click(BEACON_MY, offset=(20, 20), interval=2)
+                    continue
+
+            # 用领奖或解析入口正向确认当前信标不可出击，避免加载中误切换。
+            if self.appear(BEACON_LIST, offset=(20, 20)):
+                self.ash_combat.is_dossier = False
+                # 已结束的信标仍可通过模拟战斗进入普通编队，冷却中也不切换备用入口。
+                if self.appear(ASH_SIMULATE, offset=(30, 30)):
+                    if self.appear_then_click(ASH_SIMULATE, offset=(30, 30), interval=2):
+                        simulate_requested = True
+                    continue
+                if self.appear(BEACON_REWARD, offset=(30, 30)) or self.appear(META_BEGIN_ENTRANCE, offset=(20, 20)):
+                    if fallback_from == 'assist':
+                        logger.warning('[META作战] 无法进入战斗准备页面恢复装备，跳过战后换装')
+                        return False
+                    fallback_from = 'beacon'
+                    self.appear_then_click(BEACON_LIST, offset=(20, 20), interval=2)
+                    continue
+
+            if self.appear_then_click(ASH_START, offset=(30, 30), interval=2):
+                continue
+
+        self.ash_combat.equipment_handle_after()
+
+        skip_first_screenshot = True
+        while 1:
+            if skip_first_screenshot:
+                skip_first_screenshot = False
+            else:
+                self.device.screenshot()
+
+            if isinstance(self, AshBeaconAssist):
+                if self._in_meta_assist_page():
+                    break
+                if self.appear_then_click(BEACON_LIST, offset=(20, 20), interval=2):
+                    continue
+                if self.appear(DOSSIER_LIST, offset=(20, 20)):
+                    self.appear_then_click(ASH_QUIT, offset=(10, 10), interval=2)
+                    continue
+                if self.appear(ASH_SHOWDOWN, offset=(30, 30), interval=2):
+                    self.device.click(META_MAIN_BEACON_ENTRANCE)
+                    continue
+            else:
+                if self._in_meta_page():
+                    break
+                if self.appear_then_click(BEACON_MY, offset=(20, 20), interval=2):
+                    continue
+            if self.appear(BATTLE_PREPARATION, offset=(30, 30), interval=2):
+                self.device.click(BACK_ARROW)
+                continue
+
+        return True
+
 
 def _server_support():
-    """当前服务器是否支持信标和 OneHitMode。
+    """当前服务器是否支持信标和求援后自行作战。
 
     Returns:
         bool: 当前服务器是否支持。
@@ -194,10 +336,19 @@ class OpsiAshBeacon(Meta):
                 elif self.appear(DOSSIER_LIST, offset=(20, 20)):
                     self._meta_category = "dossier"
                 self._handle_ash_beacon_reward()
+                if self._meta_category == 'beacon':
+                    self._reset_assist_request_state()
+                    if self.ash_combat.equipment_handle_before_flag and not self._check_beacon_point():
+                        self.handle_ash_equipment_after()
                 if not self._meta_category in self._meta_receive:
                     self._meta_receive.append(self._meta_category)
                 # 击杀 META 后检查其他任务是否需要切换
-                self.config.check_task_switch()
+                try:
+                    self.config.check_task_switch()
+                except TaskEnd:
+                    # 保留调度器的切换信号，交接前先尝试恢复本任务借用的装备。
+                    self.handle_ash_equipment_after()
+                    raise
                 continue
 
     def _make_an_attack(self):
@@ -231,9 +382,9 @@ class OpsiAshBeacon(Meta):
 
             return False
 
-        # 执行战斗
-        combat = AshCombat(config=self.config, device=self.device)
-        combat.combat(expected_end=expected_end, save_get_items=False, emotion_reduce=False)
+        # 执行战斗（档案使用独立编队，不触发自动换装）
+        self.ash_combat.is_dossier = self.appear(DOSSIER_LIST, offset=(20, 20))
+        self.ash_combat.combat(expected_end=expected_end, save_get_items=False, emotion_reduce=False)
 
     def _handle_ash_beacon_reward(self, skip_first_screenshot=True):
         """
@@ -273,29 +424,59 @@ class OpsiAshBeacon(Meta):
         """
         检查当前 META 是否满足攻击条件。
 
-        信标模式下：开启 OneHitMode 且已造成伤害时，不再攻击。
+        信标模式下：首刀后按求援次数与等待时间决定是否自行收尾。
         档案模式下：META 正在自动攻击时，不再手动攻击。
 
         Returns:
             bool: 是否满足攻击条件（始终返回 True，不满足时通过 task_stop 提前终止）。
         """
         if self.appear(BEACON_LIST, offset=(20, 20)):
-            # 开启 OneHitMode 且已对当前 META 造成伤害
-            if _server_support() and self.config.OpsiAshBeacon_OneHitMode:
+            limit = self.config.OpsiAshBeacon_AssistRequestLimit
+            if _server_support() and limit >= 0:
+                count, next_request = self._get_assist_request_state()
+                if limit > 0 and count >= limit and current_time() >= next_request:
+                    logger.info(f'[META作战] 已求援 {count} 轮仍未完成，开始自行击破')
+                    return True
                 damage = self._get_meta_damage()
                 if damage > 0:
-                    logger.info(f'[META作战] 已启用一刀模式且当前 META 已造成 {damage} 伤害，30 分钟后检查')
-                    self.config.task_delay(minute=30)
+                    logger.info(f'[META作战] 当前 META 已造成 {damage} 伤害，等待支援后再检查')
+                    self.handle_ash_equipment_after()
+                    if limit > 0 and next_request is not None:
+                        self.config.task_delay(target=next_request)
+                    else:
+                        self.config.task_delay(minute=30)
                     self.ui_goto_main()
                     self.config.task_stop()
         if self.appear(DOSSIER_LIST, offset=(20, 20)):
             # META 正在自动攻击中
             if self.appear(META_AUTO_ATTACKING, offset=(20, 20)):
                 logger.info('[META作战] 当前 META 正在自动攻击，15 分钟后检查')
+                self.handle_ash_equipment_after()
                 self.config.task_delay(minute=15)
                 self.ui_goto_main()
                 self.config.task_stop()
         return True
+
+    def _get_assist_request_state(self):
+        """读取本轮信标的求援断点；损坏记录重新求援，避免提前消耗作战资源。"""
+        state = self.config.OpsiAshBeacon_AssistRequestState
+        if state is None:
+            return 0, None
+        if isinstance(state, dict):
+            count = state.get('count')
+            try:
+                next_request = datetime.fromisoformat(state['next_request'])
+            except (KeyError, TypeError, ValueError):
+                next_request = None
+            if type(count) is int and count > 0 and next_request is not None and next_request.tzinfo is None:
+                return count, next_request
+        logger.warning('[META作战] 求援记录无效，将重新累计本轮信标的求援次数')
+        return 0, None
+
+    def _reset_assist_request_state(self):
+        """确认信标已领奖或为空时清除断点，不让下一信标继承求援次数。"""
+        if self.config.OpsiAshBeacon_AssistRequestState is not None:
+            self.config.OpsiAshBeacon_AssistRequestState = None
 
     def _get_meta_damage(self):
         """
@@ -344,9 +525,21 @@ class OpsiAshBeacon(Meta):
         """
         # 信标页面
         if self.appear(BEACON_LIST, offset=(20, 20)):
-            if self.config.OpsiAshBeacon_OneHitMode or self.config.OpsiAshBeacon_RequestAssist:
+            limit = self.config.OpsiAshBeacon_AssistRequestLimit
+            if limit >= 0 or self.config.OpsiAshBeacon_RequestAssist:
+                if limit > 0:
+                    count, next_request = self._get_assist_request_state()
+                    # 首刀后立即回到此分支时仍在求援冷却；最后一轮也要留足等待时间。
+                    if count >= limit or (next_request is not None and current_time() < next_request):
+                        return True
                 if not self._ask_for_help():
                     return False
+                if limit > 0:
+                    self.config.OpsiAshBeacon_AssistRequestState = {
+                        'count': count + 1,
+                        'next_request': (current_time() + timedelta(minutes=30)).isoformat(),
+                    }
+                    logger.attr('META求援轮数', f'{count + 1}/{limit}')
             return True
         # 档案页面
         if self.appear(DOSSIER_LIST, offset=(20, 20)):
@@ -493,6 +686,8 @@ class OpsiAshBeacon(Meta):
             if attack_mode == 'current_dossier_only':
                 self.appear_then_click(ASH_QUIT, offset=(10, 10), interval=2)
                 return True
+            # 只有 INIT 状态会进入这里；主 META 入口不能证明旧信标已消失。
+            self._reset_assist_request_state()
             if self._check_beacon_point():
                 self.device.click(META_BEGIN_ENTRANCE)
                 logger.info('[META作战] 开始信标')
@@ -558,16 +753,6 @@ class OpsiAshBeacon(Meta):
         elif self.appear(ASH_SHOWDOWN, offset=(30, 30)):
             return MetaState.INIT
         return MetaState.UNDEFINED
-
-    def _in_meta_page(self):
-        """判断当前是否在 META 相关页面（主页面、信标或档案）。
-
-        Returns:
-            bool: 是否在 META 相关页面。
-        """
-        return self.appear(ASH_SHOWDOWN, offset=(30, 30)) \
-               or self.appear(BEACON_LIST, offset=(20, 20)) \
-               or self.appear(DOSSIER_LIST, offset=(20, 20))
 
     def _ensure_meta_page(self, skip_first_screenshot=True):
         """确保当前在 META 页面，不在则通过点击入口进入。
@@ -637,6 +822,7 @@ class OpsiAshBeacon(Meta):
             logger.info("当前服务器暂不支持档案信标和一刀模式，请联系开发者")
         self._ensure_meta_page()
         self._attack_meta()
+        self.handle_ash_equipment_after()
 
     def run(self):
         """执行信标攻击任务主流程：进入 META 页面、攻击、领取奖励、延迟到下次服务器更新。"""
@@ -730,8 +916,7 @@ class AshBeaconAssist(Meta):
             return False
 
         # 执行战斗
-        combat = AshCombat(config=self.config, device=self.device)
-        combat.combat(expected_end=expected_end, save_get_items=False, emotion_reduce=False)
+        self.ash_combat.combat(expected_end=expected_end, save_get_items=False, emotion_reduce=False)
 
     def _ensure_meta_level(self):
         """选择满足等级要求的 META 信标。
@@ -762,14 +947,6 @@ class AshBeaconAssist(Meta):
         if current < tier:
             logger.info(f'[META支援] 5 次尝试后未找到等级 {tier} 的信标，使用当前信标')
         logger.info(f'[META支援] 找到等级 {current} 的信标')
-
-    def _in_meta_assist_page(self):
-        """判断当前是否在信标协助页面。
-
-        Returns:
-            bool: 是否在信标协助页面。
-        """
-        return self.appear(BEACON_MY, offset=(20, 20))
 
     def _ensure_meta_assist_page(self, skip_first_screenshot=True):
         """确保当前在信标协助页面。
@@ -818,7 +995,9 @@ class AshBeaconAssist(Meta):
         """
         logger.hr('META支援')
         self._ensure_meta_assist_page()
-        return self._attack_meta(skip_first_screenshot=False)
+        result = self._attack_meta(skip_first_screenshot=False)
+        self.handle_ash_equipment_after()
+        return result
 
     def run(self):
         """

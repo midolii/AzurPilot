@@ -3,12 +3,14 @@
  */
 
 import type {Catalog, ProgramSaved, ProgramSimulation, ProgramValidation, RuntimeProgramState} from '../scheduler/types'
+import type {MindCalculation, MindCatalog, MindReport, MindShip} from '../mind/types'
+import type {Catalog as FleetTechCatalog, Report as FleetTechReport} from '../fleet-tech/types'
 
 export type Scalar = string | number | boolean | null
 export type Value = Scalar | Value[] | {[key: string]: Value}
 type Values = Record<string, Record<string, Record<string, Value>>>
 export type Status = 'running' | 'stopped' | 'error' | 'updating'
-export interface Instance { name: string; status: Status; serial: string; server: string; currentTask?: string | null }
+export interface Instance { name: string; status: Status; serial: string; server: string; region?: 'cn' | 'en' | 'jp' | 'tw' | null; currentTask?: string | null }
 export interface UpdateStatus {
   state: string; localHead: string | null; upstreamHead: string | null; branch: string
   ahead: number; behind: number; available: boolean; busy: boolean; canApply: boolean; canCancel: boolean; error: string
@@ -39,7 +41,7 @@ export interface Schema {
   args: Record<string, Record<string, Record<string, Field>>>
   translations: Record<string, unknown>
 }
-export interface Config { instance: string; revision: string; values: Values }
+export interface Config { instance: string; revision: string; values: Values; options?: Record<string, Value[]> }
 export interface OpsiSimulatorResult {
   cl1Count: number; meowCount: number; crashedProbability: number
   cl1Time: number; meowTime: number; ap: number; coin: number
@@ -111,6 +113,8 @@ export interface MeowfficerScoreReport { instance: string; generatedAt: string; 
 interface DeployField { key: string; type: string; label: string; help: string; value: Value; options: Value[] }
 interface RemoteAccessStatus { enabled: boolean; state: string; address: string; error: string }
 export interface Settings { groups: {key: string; label: string; fields: DeployField[]}[]; notice: string; demo: boolean; remote?: RemoteAccessStatus }
+export interface RemotePairing { id: string; client_id: string; code: string; particle_secret: string; expires_at: number }
+export interface RemoteClient { id: string; created_at: number }
 export interface ApiEvent { v: 1; type: 'event'; topic: string; seq: number; data: unknown }
 export interface ApiResponse { v: 1; type: 'response'; id: string; ok: boolean; result?: unknown; error?: {code: string; message: string; details?: unknown} }
 export interface Announcement {
@@ -129,7 +133,31 @@ export interface BackgroundGalleryEntry {
   source?: string
 }
 
+export interface LauncherCommand {
+  id: string; status: 'pending' | 'succeeded' | 'failed' | 'expired'; deadline: number
+  result?: {supported: boolean; enabled: boolean | null}; error?: {code: string; message: string}
+}
+export interface LauncherStatus {
+  connected: boolean; platform: string; version: string; capabilities: string[]
+  autostart: {supported: boolean; enabled: boolean | null}; commands: LauncherCommand[]
+}
+
 export interface Results {
+  'launcher.status': LauncherStatus
+  'launcher.autostart.set': {commandId: string; status: 'pending'}
+  'launcher.command.get': LauncherCommand
+  'auth.launcher': {authenticated: boolean}
+  'mind.catalog': MindCatalog
+  'fleetTech.catalog': FleetTechCatalog
+  'fleetTech.report': FleetTechReport
+  'fleetTech.patch': FleetTechReport
+  'fleetTech.syncMind': FleetTechReport
+  'mind.report': MindReport
+  'mind.calculate': MindCalculation
+  'mind.save': MindReport
+  'mind.import': {ships: MindShip[]}
+  'mind.recognize': {ships: MindShip[]}
+  'mind.export': {filename: string; content: string}
   'statistics.resourceFlows': ResourceFlowReport
   'stock.status': StockExchangeStatus
   'stock.rebuild': StockExchangeRebuild
@@ -184,6 +212,10 @@ export interface Results {
   'meowfficer.scoreReport': MeowfficerScoreReport
   'meowfficer.clearReport': {cleared: boolean; removed: string[]}
   'settings.get': Settings
+    'remote.pair.create': RemotePairing
+    'remote.pair.status': {state: 'pending' | 'claimed' | 'expired'}
+    'remote.clients': RemoteClient[]
+    'remote.revoke': {revoked: boolean}
   'settings.patch': {updated: string[]}
   'startup.get': {enabled: boolean; remember: boolean}
   'startup.set': {enabled: boolean; remember: boolean}

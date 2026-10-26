@@ -1081,7 +1081,14 @@ class AzurLaneAutoScript:
     def run(self, command, skip_first_screenshot=False):
         """任务调用边界同时隔离资源归因，恢复和清油调用各自拥有独立记录。"""
         from module.statistics.resource_flow import task_session
-        with task_session(self.config_name, inflection.camelize(inflection.underscore(command))):
+        from module.campaign.recovery import campaign_recovery_scope
+        recovery = self.__dict__.get('_campaign_recovery')
+        if recovery is not None and inflection.underscore(command) not in (
+                'restart', inflection.underscore(recovery.runner.config.task.command)):
+            logger.info('[战役续接] 已切换到其他任务，丢弃原关卡续接凭据')
+            self._campaign_recovery = None
+        with task_session(self.config_name, inflection.camelize(inflection.underscore(command))), \
+                campaign_recovery_scope(self):
             return self._run(command, skip_first_screenshot)
 
     def _run(self, command, skip_first_screenshot=False):
@@ -1120,12 +1127,38 @@ class AzurLaneAutoScript:
                 self._channel_float_done = False
             # Restart 只重置标志，留待重启后的首个主界面回合处理悬浮球。
             elif not self._channel_float_done:
-                self.handle_channel_float()
+                recovery = self.__dict__.get('_campaign_recovery')
+                if recovery is not None and recovery.ready \
+                        and command == inflection.underscore(recovery.runner.config.task.command):
+                    logger.info('[战役续接] 先接管保留关卡，渠道悬浮球检查留待主界面任务')
+                else:
+                    self.handle_channel_float()
+            recovery = self.__dict__.get('_campaign_recovery')
+            if recovery is not None and command != 'restart':
+                self._campaign_recovery = None
+                if recovery.ready and recovery.matches(self.config):
+                    self._resuming_campaign_recovery = recovery
+                    try:
+                        recovery.resume(self.config, self.device)
+                    finally:
+                        self._resuming_campaign_recovery = None
+                    return True
+                logger.warning('[战役续接] 重启未完成、凭据过期或配置已改变，回退原任务流程')
             self.__getattribute__(command)()
             return True
         except StorageStatisticsError as e:
             logger.error(str(e))
             self._storage_statistics_failed = True
+            return False
+        except MindCalculatorScanError as e:
+            logger.error_context(
+                title='舰船科技扫描未完成' if command == 'fleet_tech_scan' else '心智单元船坞扫描未完成', reason=str(e), exc=e,
+                impact='本次扫描结束，保留上次完整舰船清单，不重启模拟器。',
+                action='查看错误截图和具体原因，确认船坞布局及控制方式后重新启动扫描。',
+                level=50,
+            )
+            self.save_error_log()
+            self._check_sensitive_exit(command, e)
             return False
         except TaskEnd:
             return True
@@ -1501,7 +1534,25 @@ class AzurLaneAutoScript:
         from module.handler.login import LoginHandler
         if self.delay_due_restart():
             return
-        LoginHandler(self.config, device=self.device).app_restart()
+        login = LoginHandler(self.config, device=self.device)
+        recovery = self.__dict__.get('_campaign_recovery')
+        if recovery is not None and (recovery.ready or not recovery.matches(
+                self.config, task=recovery.runner.config.task.command)):
+            logger.info('[战役续接] 重启来源或原任务配置已改变，丢弃续接凭据')
+            self._campaign_recovery = None
+            recovery = None
+        if recovery is not None and recovery.restart_attempts >= recovery.MAX_ATTEMPTS:
+            logger.warning('[战役续接] 关联 Restart 次数已达上限，停止续接并回退原重启流程')
+            self._campaign_recovery = None
+            recovery = None
+        if recovery is not None:
+            recovery.restart_attempts += 1
+            recovery.bind_device(self.device)
+            login.campaign_recovery_check = recovery.runner.campaign.auto_search_recovery_state
+        login.app_restart()
+        if recovery is not None:
+            recovery.ready = True
+            logger.info('[战役续接] 异常 Restart 已完成，等待原任务接管')
         self.delay_next_restart()
 
     def restart_random_delay_minutes(self):
@@ -1691,6 +1742,10 @@ class AzurLaneAutoScript:
         from module.island.island_air_drop import IslandAirDrop
         IslandAirDrop(config=self.config, device=self.device).run()
 
+    def island_plan(self):
+        from module.island.island_plan import IslandPlan
+        IslandPlan(config=self.config, device=self.device).run()
+
     def island_cargo_preparation(self):
         from module.island.island_cargo_preparation import IslandCargoPreparation
         IslandCargoPreparation(config=self.config, device=self.device).run()
@@ -1714,6 +1769,10 @@ class AzurLaneAutoScript:
     def daily(self):
         from module.daily.daily import Daily
         Daily(config=self.config, device=self.device).run()
+
+    def limit_challenge(self):
+        from module.limit_challenge.limit_challenge import LimitChallenge
+        LimitChallenge(config=self.config, device=self.device).run()
 
     def hard(self):
         from module.hard.hard import CampaignHard
@@ -1836,35 +1895,29 @@ class AzurLaneAutoScript:
         from module.campaign.os_run import OSCampaignRun
         OSCampaignRun(config=self.config, device=self.device).opsi_daily_delay()
 
-    def main(self):
+    def _run_campaign(self):
+        """主线与普通活动槽位的战役调用；断点由公共 CampaignRun 保存。"""
         from module.campaign.run import CampaignRun
         CampaignRun(config=self.config, device=self.device).run(
             name=self.config.Campaign_Name, folder=self.config.Campaign_Event, mode=self.config.Campaign_Mode)
+
+    def main(self):
+        self._run_campaign()
 
     def main2(self):
-        from module.campaign.run import CampaignRun
-        CampaignRun(config=self.config, device=self.device).run(
-            name=self.config.Campaign_Name, folder=self.config.Campaign_Event, mode=self.config.Campaign_Mode)
+        self._run_campaign()
 
     def main3(self):
-        from module.campaign.run import CampaignRun
-        CampaignRun(config=self.config, device=self.device).run(
-            name=self.config.Campaign_Name, folder=self.config.Campaign_Event, mode=self.config.Campaign_Mode)
+        self._run_campaign()
 
     def event(self):
-        from module.campaign.run import CampaignRun
-        CampaignRun(config=self.config, device=self.device).run(
-            name=self.config.Campaign_Name, folder=self.config.Campaign_Event, mode=self.config.Campaign_Mode)
+        self._run_campaign()
 
     def event2(self):
-        from module.campaign.run import CampaignRun
-        CampaignRun(config=self.config, device=self.device).run(
-            name=self.config.Campaign_Name, folder=self.config.Campaign_Event, mode=self.config.Campaign_Mode)
+        self._run_campaign()
 
     def event3(self):
-        from module.campaign.run import CampaignRun
-        CampaignRun(config=self.config, device=self.device).run(
-            name=self.config.Campaign_Name, folder=self.config.Campaign_Event, mode=self.config.Campaign_Mode)
+        self._run_campaign()
 
     def raid(self):
         from module.raid.run import RaidRun
@@ -1966,6 +2019,14 @@ class AzurLaneAutoScript:
     def fleet_scan(self):
         from module.retire.fleet_management import FleetManagement
         FleetManagement(config=self.config, device=self.device, task="FleetScan").run()
+
+    def mind_calculator_scan(self):
+        from module.retire.mind_scan import MindCalculatorScan
+        MindCalculatorScan(config=self.config, device=self.device, task="MindCalculatorScan").run()
+
+    def fleet_tech_scan(self):
+        from module.retire.fleet_tech_scan import FleetTechScan
+        FleetTechScan(config=self.config, device=self.device, task="FleetTechScan").run()
 
     def game_manager(self):
         from module.daemon.game_manager import GameManager
@@ -2744,10 +2805,8 @@ if __name__ == '__main__':
         exit(2)
 
     alas = AzurLaneAutoScript(config_name=config_name)
-    # 先完成统计数据准备（旧加密数据自动解密，有界等待，异常环境不阻塞启动），再启动业务任务。
-    try:
-        from module.statistics.opsi_secure import initialize
-        initialize()
-    except Exception:
-        logger.exception('[统计-运行] 启动时初始化未完成（稍后自动重试）')
+    # 迁移成功后才能启动业务，失败保留旧源并退出。
+    from module.persistence.database import initialize
+    initialize()
+
     alas.loop()

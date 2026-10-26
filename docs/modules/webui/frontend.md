@@ -1,10 +1,17 @@
 # 前端
 
+远程页的 `src/remote/PairingPanel.tsx` 展示服务器生成的配对码与标准二维码（`src/remote/PairingQr.tsx`）。
+`PairingQr` 将 128 位单次配对密钥编码为 `azurpilot://pair?secret=<secret>` 协议二维码并支持一键复制六码与链接；AFA 在原生网关完成配对与认证，见 [远程访问](remote-access.md)。
+
+二维码使用相连的圆角模块与圆角定位框，保留四模块静区、32px 纯白内边距及深色码点；主题色只少量混入深色基底。等待配对时，`PairingScanGuide` 在操作区旁展示手机对准二维码、扫描与识别反馈的六秒循环示意。示意图使用二维码图标，不接收配对密钥，其识别反馈不表示实际配对成功；真实二维码保持静止。窄屏时示意移至下方，离开视口或切到后台时暂停；系统开启减少动态效果时保留静态取景画面。示意图只保留辅助阅读标签，不展示说明文字。
+
 > React 控制台（frontend/）：React + TypeScript + Vite 实现的 WebUI，业务通信统一走 `/api/v1/ws`。详细界面设计与协议见 frontend/README.md 与 frontend/API.md。
 
 ## 1. 模块概述
 
-实例侧栏新增独立 [资源管理](resource-management.md) 页 `/i/:instance/resources`，由 `pages/ResourceManagement.tsx` 与 `resources/` 提供 ECharts 桑基图、库存与收支明细。图节点支持资源与任务筛选，明细支持分页和完整区间 CSV 导出；原调度的石油自动控制使用现有配置事务接口保存。五种语言、窄屏和空数据状态均沿用控制台组件与主题。
+[资源管理](resource-management.md) 位于「资源统计」内的「资源趋势」旁边，路径为 `/i/:instance/statistics?view=management`；旧 `/resources` 路径自动跳转。由 `pages/ResourceManagement.tsx` 与 `resources/` 提供 ECharts 桑基图、库存与收支明细。图节点支持资源与任务筛选，明细支持分页和完整区间 CSV 导出；原调度的石油自动控制使用现有配置事务接口保存。五种语言、窄屏和空数据状态均沿用控制台组件与主题。
+
+「舰队管理」下并列放置「舰队信息」与 [心智单元计算器](mind-calculator.md)。计算器路径为 `/i/:instance/task/MindCalculator`，旧 `/mind-calculator` 自动跳转；沿用 `components/taskNavItems.ts` 的 WebUI 页面导航机制，同时覆盖侧栏树、悬浮菜单及顶栏任务跳转，不注册新的游戏任务。「舰队信息」由 `pages/FleetInfoPage.tsx` 提供舰队卡片和扫描开关，调用 `tasks.run(FleetScan)`，只在该扫描运行时调用 `scheduler.stop`；其他任务运行、更新或连接不可用时禁用。启动前等待配置队列保存，扫描运行期间及结束后重读舰队信息；浏览页面不启动游戏，也不修改实例自启设置。
 
 frontend/ 是 AzurPilot 的浏览器控制台，替代旧版 PyWebIO 界面，覆盖主页与实例导航、任务配置表单、总览日志与截图预览、统计图表、系统设置、远程访问与更新器。前端不包含任何游戏逻辑，所有业务操作都通过 WebSocket API 交给 [API 服务](api.md)执行。
 
@@ -105,6 +112,8 @@ Node.js >= 22.12（推荐 24），首次准备用 `npm ci --prefix frontend`。
 - 类型报错疑似与后端契约不一致时，先重跑 `dev_tools.export_api_schema`，再排查是否有人手改了生成产物。
 
 ## 20. 相关模块
+
+- [舰队科技列表](fleet-technology.md) —— Lua 目录、累计扫描证据、人工校正和阵营加成。
 
 - [WebUI 总览](index.md)
 - [API 服务](api.md) —— 协议、认证与路由，前端所有业务通信的对端

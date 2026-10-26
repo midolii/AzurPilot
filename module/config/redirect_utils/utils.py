@@ -73,6 +73,26 @@ def dossier_redirect(value):
         return 'current'
 
 
+def meta_assist_limit_redirect(value):
+    """将一击即走开关迁移为求援次数上限，保持原有作战策略。"""
+    # 核心重定向会跳过 null，WebUI 的只读迁移也应保留默认的无限求援。
+    if value is None:
+        return 0
+    return 0 if value else -1
+
+
+def sea_miles_interval_redirect(value):
+    """海里记录旧开关迁移为天数间隔，保留已有的数字设置。"""
+    if value is None:
+        return -1
+    if isinstance(value, list):
+        # 兼容旧版复选框保存的 [] / [True]，沿用原复选框解析规则。
+        return 0 if any(bool(item) for item in value) else -1
+    if isinstance(value, bool):
+        return 0 if value else -1
+    return value
+
+
 def enhance_favourite_redirect(value):
     """重定向强化目标舰船选择（EnhanceFavourite -> ShipToEnhance）。
 

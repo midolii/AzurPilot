@@ -17,6 +17,12 @@ const locales = Object.fromEntries(['zh-CN', 'zh-TW', 'en-US', 'ja-JP', 'zh-MIAO
 const ajv = new Ajv({ strict: false, useDefaults: true })
 const validators = Object.fromEntries(Object.entries(contract.methods).map(([method, entry]) => [method, ajv.compile(entry.params)]))
 const revision = values => createHash('sha256').update(JSON.stringify(values)).digest('hex')
+// 与后端按游戏包名确定地区的规则一致，开服检测配置不参与判断。
+const region = packageName => !packageName || packageName === 'auto' ? null : ({
+  en: 'en', jp: 'jp', tw: 'tw',
+  'com.YoStarEN.AzurLane': 'en', 'com.YoStarJP.AzurLane': 'jp', 'com.hkmanjuu.azurlane.gp': 'tw',
+  'com.hkmanjuu.azurlane.gp.mc': 'tw',
+})[packageName] ?? 'cn'
 const timestamp = date => date.toISOString().slice(0, 19).replace('T', ' ')
 const translate = key => key.split('.').reduce((value, part) => value?.[part], locales['zh-CN']) ?? key
 export const fail = (code, message, details = null) => { throw Object.assign(new Error(message), { code, details }) }
@@ -44,6 +50,25 @@ function validateField(path, value) {
 
 export function createMockState({ empty = false } = {}) {
   const instances = new Map()
+  const mindShips = new Map()
+  const fleetRecords = new Map()
+  function fleetPython(action, params) {
+    const fields = get(params.instance).values.FleetTechScan.FleetTech
+    const output = mindPython(`tech.${action}`, {...params, ships: mindShips.get(params.instance) ?? [],
+      record: fleetRecords.get(params.instance) ?? {}, min_level: fields.MinLevel, max_level: fields.MaxLevel})
+    if (['patch', 'syncMind'].includes(action)) fleetRecords.set(params.instance, output.record)
+    return output.result
+  }
+  function mindPython(action, params) {
+    const run = spawnSync('uv', ['run', '--no-sync', 'python', '-X', 'utf8', '-m', 'dev_tools.mind_calculator_mock'], {
+      cwd: fileURLToPath(new URL('../../', import.meta.url)), input: JSON.stringify({action, ...params}),
+      encoding: 'utf8', timeout: 30000, windowsHide: true,
+    })
+    if (run.error || run.status) fail('INTERNAL_ERROR', '计算器模拟服务运行失败')
+    const result = JSON.parse(run.stdout)
+    if (result.error) fail(result.code ?? 'INVALID_PARAMS', result.error)
+    return result
+  }
   const stock = createStockProxy(name=>{const r=get(name).values.Dashboard.ActionPoint;return r?.Total!=null&&r.Record?{instance:name,actionPoints:r.Total,observedAt:Math.floor(new Date(r.Record.replace(' ','T')+'Z').getTime()/1000)}:null})
   const programs = new Map()
   const simulations = new Map()
@@ -97,6 +122,13 @@ export function createMockState({ empty = false } = {}) {
     localHead = divergedUpdater ? divergedLocalHead : commits[3].sha
   }
   const updateStatus = () => ({ state: localHead === upstreamHead ? 'idle' : 'available', localHead, upstreamHead, branch: 'dev', ahead: divergedUpdater ? 1 : 0, behind: divergedUpdater ? 3 : commits.findIndex(item => item.sha === localHead), available: localHead !== upstreamHead, busy: false, canApply: localHead !== upstreamHead, canCancel: false, error: '', shaMismatch: divergedUpdater })
+  let mockClients = [
+    { id: '11112222333344445555666677778888', created_at: 1729214415 },
+    { id: 'aaaabbbbccccddddeeeeffff00001111', created_at: 1729214533 },
+    { id: '22223333444455556666777788889999', created_at: 1729214650 },
+    { id: 'bbbbccccddddeeeeffff000011112222', created_at: 1729214780 },
+    { id: '3333444455556666777788889999aaaa', created_at: 1729214910 },
+  ]
   const settings = {
     groups: [
       {
@@ -118,11 +150,32 @@ export function createMockState({ empty = false } = {}) {
         ]
       },
     ], notice: '前端测试数据', demo: false, remote: {
-      enabled: true, state: 'waiting_peer', address: 'https://tunnel.example.com/p2p/example-peer-id', error: '',
+      enabled: true, state: 'cloudflare_ready', address: 'https://remote.azurpilot.com/d/mock-device-id/', error: '',
     }
   }
   const get = name => instances.get(name) ?? fail('NOT_FOUND', '实例不存在')
-  const snapshot = name => ({ instance: name, revision: revision(get(name).values), values: structuredClone(get(name).values) })
+  const campaignOptions = values => {
+    const server = region(values.Alas.Emulator.PackageName) ?? 'cn'
+    return Object.fromEntries(Object.entries(args).flatMap(([task, groups]) => {
+      const candidates = groups.Campaign?.Event?.[`option_${server}`]
+      return candidates ? [[`${task}.Campaign.Event`, candidates]] : []
+    }))
+  }
+  const refreshCampaigns = (values, options) => {
+    for (const [path, candidates] of Object.entries(options)) {
+      const [task] = path.split('.')
+      const current = values[task]?.Campaign?.Event ?? 'campaign_main'
+      if (candidates.length && (task !== 'WarArchives' || current === 'campaign_main') && !candidates.includes(current)) {
+        values[task].Campaign.Event = candidates[0]
+      }
+    }
+  }
+  const snapshot = name => {
+    const values = structuredClone(get(name).values)
+    const options = campaignOptions(values)
+    refreshCampaigns(values, options)
+    return { instance: name, revision: revision(get(name).values), values, options }
+  }
   // 日志时间与真实后端一致使用本地时区（timestamp() 供调度比较，保持 UTC）。
   const logTime = date => [date.getHours(), date.getMinutes(), date.getSeconds()].map(n => String(n).padStart(2, '0')).join(':')
     + '.' + String(date.getMilliseconds()).padStart(3, '0')
@@ -373,6 +426,7 @@ export function createMockState({ empty = false } = {}) {
       values.Main.Emotion.Fleet1Record = '2026-09-12 23:45:12.123456'
       values.Main.Scheduler.NextRun = '2099-01-01 12:00:00'
       values.Alas.Emulator.Serial = `127.0.0.1:${5555 + index * 2}`
+      values.Alas.Emulator.ServerName = 'cn_android-20'
       /* 四个演示实例各占一档：小狗 / 中狗 / 大狗 / 狗王，用来一次看全行动力图标的四档。 */
       const apTotal = {'demo-main': 6001, 'demo-alt': 8001, 'demo-error': 10001, 'demo-dog': 12001}[name] ?? 6001
       const dashboardDefaults = {
@@ -432,7 +486,7 @@ export function createMockState({ empty = false } = {}) {
       case 'updater.cancel': return { accepted: true }
       case 'system.ping': return { pong: true }
       case 'schema.get': return { args, menu, translations: locales[params.language] }
-      case 'instances.list': return [...instances].map(([name, item]) => ({ name, status: item.status, currentTask: item.status === 'running' ? 'Commission' : null, serial: item.values.Alas.Emulator.Serial, server: item.values.Alas.Emulator.ServerName }))
+      case 'instances.list': return [...instances].map(([name, item]) => ({ name, status: item.status, currentTask: item.status === 'running' ? item.currentTask ?? 'Commission' : null, serial: item.values.Alas.Emulator.Serial, server: item.values.Alas.Emulator.ServerName, region: region(item.values.Alas.Emulator.PackageName) }))
       case 'instances.create': {
         if (!/^[A-Za-z0-9\u3041-\u3096\u30a1-\u30fa\u30fc\u31f0-\u31ff\uff66-\uff9f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff][A-Za-z0-9_. \u3041-\u3096\u30a1-\u30fa\u30fc\u31f0-\u31ff\uff66-\uff9f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\-]{0,63}$/.test(params.name) || /^(template|deploy|backup|con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(params.name)) fail('INVALID_PARAMS', '实例名称无效')
         if ([...instances.keys()].some(name => name.toLowerCase() === params.name.toLowerCase())) fail('ALREADY_EXISTS', '同名实例已存在')
@@ -485,18 +539,43 @@ export function createMockState({ empty = false } = {}) {
           data.values[task] ??= {}; data.values[task][group] ??= {}
           data.values[task][group][arg] = value
         }
+        const options = campaignOptions(data.values)
+        for (const [path, candidates] of Object.entries(options)) {
+          const [task] = path.split('.')
+          if (candidates.length && seen.has(path) && !candidates.includes(data.values[task].Campaign.Event)) fail('INVALID_PARAMS', '请选择当前服务器的活动')
+        }
+        refreshCampaigns(data.values, options)
         get(name).values = data.values
         log(name, `已保存 ${params.changes.length} 项配置。`)
         return snapshot(name)
       }
       case 'overview.get': return overview(name)
+      case 'mind.catalog': return mindPython('catalog', params)
+      case 'fleetTech.catalog': return fleetPython('catalog', params)
+      case 'fleetTech.report': return fleetPython('report', params)
+      case 'fleetTech.patch': return fleetPython('patch', params)
+      case 'fleetTech.syncMind': return fleetPython('syncMind', params)
+      case 'mind.calculate': return mindPython('calculate', params)
+      case 'mind.report': {
+        const range = get(name).values.MindCalculatorScan.MindCalculator
+        return {...mindPython('report', {ships: mindShips.get(name) ?? []}), instance: name, updated_at: '', min_level: range.MinLevel, max_level: range.MaxLevel}
+      }
+      case 'mind.save': {
+        const current = mindPython('report', {ships: mindShips.get(name) ?? []})
+        if (current.revision !== params.revision) fail('CONFLICT', '舰船数据已变化，请重新载入后再保存')
+        mindShips.set(name, params.ships)
+        return dispatch('mind.report', {instance: name})
+      }
+      case 'mind.import': return mindPython('import', params)
+      case 'mind.recognize': return mindPython('recognize', params)
+      case 'mind.export': return mindPython('export', {...params, ships: mindShips.get(name) ?? []})
       case 'stock.status': return stock.status(name)
       case 'stock.rebuild': return stock.rebuild(name,params)
       case 'stock.request': return stock.request(name,params)
       case 'scheduler.start': case 'tasks.run':
         if (get(name).status === 'running') fail('INSTANCE_RUNNING', '实例已在运行')
         if (method === 'tasks.run' && !['FleetScan', 'StorageStatistics'].includes(params.task) && !Object.values(menu).some(group => group.page === 'tool' && group.tasks.includes(params.task))) fail('INVALID_PARAMS', '该任务不支持单独运行')
-        get(name).status = 'running'; log(name, '模拟调度器已启动。')
+        get(name).status = 'running'; get(name).currentTask = params.task ?? 'Commission'; log(name, '模拟调度器已启动。')
         return overview(name)
       case 'scheduler.stop':
         get(name).status = 'stopped'; log(name, '模拟调度器已停止。')
@@ -923,12 +1002,34 @@ export function createMockState({ empty = false } = {}) {
           url: 'https://github.com/wess09/AzurPilot'
         }
       case 'events.subscribe':
-        if (params.topics.some(topic => topic !== 'instances') && !name) fail('INVALID_PARAMS', '订阅此主题需要指定实例')
+        if (params.topics.some(topic => topic !== 'instances' && topic !== 'notifications') && !name) fail('INVALID_PARAMS', '订阅此主题需要指定实例')
         return { topics: params.topics, instance: name ?? null }
       case 'background.gallery.list': return []
       case 'background.gallery.open': return { path: 'cache/background/library' }
       case 'background.gallery.remove': return { removed: true }
       case 'background.gallery.add': return { entry: { id: 'mock_bg', name: params.name || 'mock', kind: 'image', size: 1024, added: Date.now() } }
+      case 'remote.pair.create':
+        mockClients = [
+          { id: '11112222333344445555666677778888', created_at: 1729214415 },
+          { id: 'aaaabbbbccccddddeeeeffff00001111', created_at: 1729214533 },
+          { id: '22223333444455556666777788889999', created_at: 1729214650 },
+          { id: 'bbbbccccddddeeeeffff000011112222', created_at: 1729214780 },
+          { id: '3333444455556666777788889999aaaa', created_at: 1729214910 },
+        ]
+        return {
+          id: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          client_id: '11112222333344445555666677778888',
+          code: '849201',
+          particle_secret: '0123456789abcdef0123456789abcdef',
+          expires_at: Math.floor(Date.now() / 1000) + 300,
+        }
+      case 'remote.pair.status':
+        return { state: 'pending' }
+      case 'remote.clients':
+        return structuredClone(mockClients)
+      case 'remote.revoke':
+        mockClients = mockClients.filter(item => item.id !== params.id)
+        return { revoked: true }
       default: fail('METHOD_NOT_FOUND', '此方法由连接层处理')
     }
   }

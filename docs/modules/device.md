@@ -27,6 +27,19 @@
 - 单按钮连击保护阈值为 12 次；仅 S 经验结算按钮 `EXP_INFO_S` 放宽为 15 次，配合普通战斗处理器的 2 秒点击间隔等待自动跳转。双按钮各 6 次的交替点击保护不变。
 - 基准测试入口：首次连接时自动为截图方式与 OCR 设备跑简化基准并写回配置。
 
+uiautomator2、minitouch、scrcpy、MaaTouch、nemu_ipc 控制下，前台应用检测、游戏启动/停止和
+UI 层级读取沿用 uiautomator2 通路，实际触控使用各自配置的后端。
+MuMu Android 15 的自动截图测速保留 uiautomator2 候选，
+成功时正常参与排名；异常或超时后才跳过本次候选，不按系统版本提前排除。
+简化测速与完整测速一样，只在 SDK 23–32 测试 DroidCast / DroidCast_raw。
+
+简化/完整截图测速和完整点击测速中的 u2 请求使用独立客户端，连接/读取超时分别为 3/5 秒，
+不经过 keepalive 初始化、agent 自动安装、JSON-RPC 自动恢复或设备后端多轮重试。
+完整点击测速先检查 uiautomator 服务，未运行时仅启动一次已有服务，并在启动请求后最多等待
+5 秒确认 `deviceInfo` 可用；就绪检查只对启动过程中的 HTTP 502 继续等待，不安装 agent 或辅助 APK。
+单项第一次失败即记为 `Failed` 并继续其他候选，成功则保留原有采样次数与排名方式；
+再次运行测速仍可尝试 u2。此限制仅用于测速，正常任务的截图、点击和恢复流程保持原有策略。
+
 ### 不负责
 
 - 恢复策略决策：收到 `EmulatorNotRunningError` 后何时重启模拟器、是否深度重启，由调度器 `alas.py` 的 `_try_restart_emulator()` 决定（见 [调度器](entry/alas.md)）。
@@ -44,6 +57,7 @@ module/device/
 ├── connection_attr.py   # 连接属性底座：adb 二进制定位、serial 校正、模拟器家族判定
 ├── screenshot.py        # Screenshot mixin：截图分发与统一后处理
 ├── control.py           # Control mixin：点击/滑动/拖拽分发
+├── live_drag.py         # 连续触点：按住期间可穿插截图、识别和移动
 ├── input.py             # Input mixin：文本输入（u2）
 ├── app_control.py       # AppControl mixin：应用启停、前台检测、层级 dump
 ├── env.py               # IS_WINDOWS / IS_MACINTOSH / IS_LINUX 常量
@@ -81,6 +95,7 @@ module/device/
 | `Device.for_existing_device(config)` | 收尾专用：不启动模拟器、不改配置，连不上直接抛 `EmulatorNotRunningError` |
 | `Platform(config, connect=False)` | 模拟器离线时的轻量入口：只解析 serial 与模拟器实例，供调度器重启模拟器 |
 | `self.device.screenshot()` / `click()` / `swipe()` / `app_start()` | 业务模块经 `ModuleBase` 使用的日常接口 |
+| `device.live_drag(name)` | 连续触控上下文；调用 `down(point)`、`move(point)`、`up()`，期间可持续截图 |
 | `device.dump_hierarchy()` | UI 层级树获取，配合 `xpath_to_button()` |
 | `WORKER_POOL.start_thread_soon()` | 供 nemu_ipc 等需要超时强杀的阻塞调用使用 |
 
@@ -143,6 +158,33 @@ Input(Uiautomator2)
 | `nemu_ipc` | MuMu 内部 RPC 触控（低性能机易丢步，保留为可选项） |
 | `Hermit` | HTTP 注入，仅 VMOS（无 u2/minitouch 的环境） |
 | `scrcpy` | scrcpy 控制通道（代码保留，配置选项未暴露） |
+
+`PatchedIniter.push_url()` 为 atx-agent 预填 uiautomator2 的原有缓存，再沿用上游解包和 ADB 推送。
+下载时不发送固定的 GitHub `Origin`，避免 `atx.azurpilot.com` 重定向到 CNB 后被拒绝；连接/读取
+超时分别为 5/30 秒，镜像失败时回退到相同版本和架构的 OpenATX 官方 GitHub Release。
+已有缓存和新下载都检查归档内的完整 `atx-agent` 文件；下载先写临时文件，检查后原子替换缓存，
+失败时清除残片并继续抛出错误。其他资源的下载以及 ABI 选择、禁用 minicap 的补丁保持原有流程。
+离线验证见 `tests.test_atx_agent_download`；下载和模拟推送验证不能代替真实设备上的 agent 启动验收。
+
+uiautomator2 的测试辅助 APK `com.github.uiautomator.test` 未声明 `versionName`。
+上游配套 packaging 20.9 会将空字符串解析为旧版 `LegacyVersion`，本项目使用的 packaging 24.2
+则会抛 `InvalidVersion`；不能把正常的测试 APK 当作损坏安装或依靠降级依赖处理。
+兼容类 `Device._is_apk_required()` 通过 `pm path` 的退出码与 `package:/...` 安装路径检查两份辅助 APK，
+只有缺失时才进入原有安装恢复；传输异常继续向上传播。回归见 `tests.test_uiautomator_apk_presence`。
+
+### 连续触控（live_drag.py）
+
+`with device.live_drag(name) as touch` 提供独立的 `down / move / up` 原语。
+`move()` 不松手、不生成完整手势或追加点击，业务状态循环可在同一触点仍按住时截图并计算下一步位置。
+`glide(point, speed)` 在后台逐像素连续移动；主线程同时截图和识别，可更新目标与速度或反向修正。
+`hold()` 停止后台移动并保持按下，`check_error()` 把发送异常交回游戏线程。
+松手前先取消并等待移动线程结束，避免释放后仍有移动命令；后台发送错误同样会在释放后抛出。
+MaaTouch 与 minitouch 的连续命令不追加普通手势的 50 ms 结束延时，移动速率由可中断的触点节奏控制。
+MaaTouch、minitouch、uiautomator2、scrcpy、nemu_ipc 支持该接口；ADB 等只能发送整段手势的后端明确报错，不降级。
+触点状态在发送按下前登记，退出上下文时尝试释放，包含截图、识别异常和正常中断。
+持续触点内不自动重放失败的移动命令；异常交给调用方和设备既有恢复流程，避免重建连接后失去抓取状态仍继续拖动。
+scrcpy 的控制锁仅保护单次发送，避免持续持锁阻塞同一设备的截图。
+业务模块负责逐帧反馈、拖动阈值、目标停稳与进展超时；设备层的等待只控制触点发送速率，不猜测页面就绪。
 
 ### WORKER_POOL（method/pool.py）
 
@@ -236,6 +278,20 @@ flowchart TD
 ```
 
 所有后端返回前都已转成 RGB numpy 数组；`Screenshot.screenshot()` 是唯一做后处理的地方（缩放、旋转、去抖），下游模块永远拿到 720p 资源空间的图像。
+
+### Windows 模拟器与启动器的退出边界
+
+`PlatformWindows.execute(wait=False)` 用短命的 `cmd /c start` 断开模拟器与 ALAS 的进程树关系；
+这不会解除 Windows Job 归属。启动器需为后端 Job 设置 `JOB_OBJECT_LIMIT_BREAKAWAY_OK`，
+并向 Python 注入 `ALAS_LAUNCHER_JOB_BREAKAWAY=1`；ALAS 仅在此能力存在时以
+`CREATE_BREAKAWAY_FROM_JOB` 启动 cmd，使模拟器及其后代独立于后端 Job。
+普通 Python worker 仍继承 Job，退出或关闭 Job 句柄时照常回收。
+
+异步模拟器启动还会从复制的环境中移除 `ALAS_LAUNCHER_PID`、`ALAS_LAUNCHER_JOB_BREAKAWAY`
+和 `ALAS_WEBUI_TRUST_SECRET`，避免模拟器被启动器的残留进程扫描误杀或继承 WebUI 信任密钥。
+父进程环境及同步管理命令保持原有行为。直接运行 Python 不请求 breakaway；旧启动器未提供能力时
+保留原有启动方式，因此要彻底解决 Job 连带关闭问题，需同时更新启动器和 ALAS。
+显式配置的停止后关闭模拟器、模拟器故障恢复和看门狗仍按各自规则执行。
 
 ## 9. 状态模型
 
@@ -364,6 +420,7 @@ image = device.screenshot()
 
 ## 19. 调试方法
 
+- 画面采集工具 [dev_tools/uiautomator2_screenshot.py](../../dev_tools/uiautomator2_screenshot.py) 使用实例配置中的截图后端，将首帧和变化帧保存为无损 WebP。默认相似度阈值为 0.98；调用 `watch(similarity=1)` 可跳过相似度计算，保存每轮的新截图，首帧只保存一次。
 - 日志统一带 `[设备-]` 前缀：`[设备-连接]` 连接与重连、`[设备-截图]` 分发与间隔、`[设备-卡死]`/`[设备-点击]` 触发的恢复检测、`[设备-Windows]` 模拟器启停。启动即打印 ADB 路径、serial、包名、服务器等 attr 行，可快速定位连错设备。
 - 截图方式可疑时：手动把 `Emulator.ScreenshotMethod` 设为 `auto` 重启，或在 WebUI 运行 Benchmark 任务看各后端耗时表（nemu_ipc/ldopengl 仅在对应模拟器可用时出现）。
 - 模拟器发现与启停可单独验证：`python -m module.device.platform.emulator_windows` 直接打印本机所有实例；`PlatformWindows('alas')` 可单独调试启停。

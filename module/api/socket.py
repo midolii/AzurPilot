@@ -5,18 +5,20 @@ import json
 import secrets
 import time
 from collections import OrderedDict
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import anyio
 from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from module.api.protocol import ApiError, AuthParams, Request, SubscribeParams, failure, response
+from module.api.protocol import ApiError, AuthParams, LauncherTicketParams, Request, SubscribeParams, failure, response
 from module.logger import logger
 from module.runtime.password_utils import REMOTE_ACCESS_HEADER, is_local_client
+from module.runtime.launcher import is_local_request
 
 # 重主题仍按各自节奏采样；日志由 worker 队列逐条到达事件直接唤醒。
-TOPIC_INTERVAL = {'overview': 1, 'instances': 2}
+TOPIC_INTERVAL = {'overview': 1, 'instances': 2, 'launcher': 1}
 TICK = min(TOPIC_INTERVAL.values())
 
 
@@ -106,13 +108,23 @@ class Gateway:
         count, until = self.failures.get(peer, (0, 0))
         if until > now:
             raise ApiError('RATE_LIMITED', '登录尝试过于频繁，请稍后重试')
-        if not secrets.compare_digest(password.encode(), self.password.encode()):
+        from module.runtime.remote_cloudflare import RemoteIdentity
+        directory = getattr(getattr(self.router, 'configs', None), 'directory', None)
+        paired = RemoteIdentity(directory).accepts(password) if isinstance(directory, Path) else False
+        if not paired and not secrets.compare_digest(password.encode(), self.password.encode()):
             count += 1
             self.failures[peer] = (count, now + min(60, count * 2))
             if len(self.failures) > 1024:
                 self.failures.popitem(last=False)
             raise ApiError('UNAUTHORIZED', '访问密码不正确')
         self.failures.pop(peer, None)
+        return paired
+
+    def paired_authorized(self, token: str) -> bool:
+        """在后续请求与心跳时重新检查配对，阻止已撤销会话继续操作。"""
+        from module.runtime.remote_cloudflare import RemoteIdentity
+        directory = getattr(getattr(self.router, 'configs', None), 'directory', None)
+        return RemoteIdentity(directory).accepts(token) if isinstance(directory, Path) else False
 
 
 class Session:
@@ -149,6 +161,7 @@ class Session:
         """
         self.gateway, self.ws = gateway, ws
         self.authorized = local or not bool(gateway.password)
+        self.paired_token = ''
         self.queue = asyncio.Queue(maxsize=32)
         self.subscription = SubscribeParams(topics=[])
         self.sequence = 0
@@ -164,6 +177,8 @@ class Session:
         self.preview_pending = None
         self.stock_changed = asyncio.Event()
         self.stock_update = {}
+        self.notification_changed = asyncio.Event()
+        self.notification_pending: list[dict] = []
 
     async def enqueue(self, message: dict):
         """将消息放入发送队列，遇到慢客户端时主动断开连接以实现背压保护。
@@ -218,8 +233,9 @@ class Session:
         logs = asyncio.create_task(self.log_producer())
         preview = asyncio.create_task(self.preview_producer())
         stock = asyncio.create_task(self.stock_producer())
+        notifications = asyncio.create_task(self.notification_producer())
         await self.event('session', {'authRequired': not self.authorized, 'protocolVersion': 1})
-        tasks = [writer, producer, reader, logs, preview, stock]
+        tasks = [writer, producer, reader, logs, preview, stock, notifications]
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -243,8 +259,9 @@ class Session:
             request_id = None
             decoded = None
             try:
-                if len(raw.encode()) > 1024 * 1024:
-                    raise ApiError('INVALID_REQUEST', '请求超过 1 MiB 限制')
+                size = len(raw.encode())
+                if size > 8 * 1024 * 1024:
+                    raise ApiError('INVALID_REQUEST', '请求超过 8 MiB 限制')
                 now = time.monotonic()
                 if now - self.window > 1:
                     self.window, self.requests = now, 0
@@ -253,6 +270,8 @@ class Session:
                 if isinstance(decoded, dict) and isinstance(decoded.get('id'), str):
                     request_id = decoded['id'][:100]
                 request = Request.model_validate(decoded)
+                if size > 1024 * 1024 and request.method not in ('mind.import', 'mind.recognize', 'mind.save', 'mind.calculate'):
+                    raise ApiError('INVALID_REQUEST', '请求超过 1 MiB 限制')
                 if request.method in ('stock.request', 'stock.status'):
                     self.requests -= 1
                 if self.requests > 30 and request.method not in ('stock.request', 'stock.status'):
@@ -262,17 +281,30 @@ class Session:
                     raise ApiError('TLS_REQUIRED', '远程账号操作必须通过 HTTPS/WSS 连接')
                 if request_id in self.responses:
                     raise ApiError('DUPLICATE_REQUEST', '请求 ID 已使用，请检查状态后使用新 ID')
-                if request.method == 'auth.login':
-                    params = AuthParams.model_validate(request.params)
-                    peer = self.ws.client.host if self.ws.client else 'unknown'
-                    self.gateway.authenticate(peer, params.password)
+                if request.method == 'auth.launcher':
+                    params = LauncherTicketParams.model_validate(request.params)
+                    if not is_local_request(self.ws) or not self.gateway.router.launcher.trust.consume(params.ticket):
+                        raise ApiError('UNAUTHORIZED', '启动器登录票据无效或已使用')
                     self.authorized = True
                     result = {'authenticated': True}
+                elif request.method == 'auth.login':
+                    params = AuthParams.model_validate(request.params)
+                    peer = self.ws.client.host if self.ws.client else 'unknown'
+                    paired = self.gateway.authenticate(peer, params.password)
+                    self.paired_token = params.password if paired else ''
+                    self.authorized = True
+                    result = {'authenticated': True}
+                elif self.paired_token and not self.gateway.paired_authorized(self.paired_token):
+                    self.authorized = False
+                    self.paired_token = ''
+                    raise ApiError('UNAUTHORIZED', '配对已撤销，请重新配对')
                 elif not self.authorized:
                     raise ApiError('UNAUTHORIZED', '请先登录')
                 elif request.method == 'events.subscribe':
                     subscription = SubscribeParams.model_validate(request.params)
-                    if any(topic != 'instances' for topic in subscription.topics):
+                    if 'launcher' in subscription.topics and not is_local_request(self.ws):
+                        raise ApiError('LOCAL_ONLY', '启动器状态只允许本机读取')
+                    if any(topic not in ('instances', 'notifications', 'launcher') for topic in subscription.topics):
                         self.gateway.router.configs.path(subscription.instance)
                     self.subscription = subscription
                     self.cache.clear()
@@ -285,7 +317,8 @@ class Session:
                     result = {'topics': subscription.topics, 'instance': subscription.instance}
                 else:
                     async with self.gateway.workers:
-                        result = await asyncio.to_thread(self.gateway.router.dispatch, request.method, request.params)
+                        result = await asyncio.to_thread(self.gateway.router.dispatch, request.method, request.params,
+                                                         local=is_local_request(self.ws))
                 reply = response(request_id, result)
             except ValidationError as exc:
                 # 错误详情不包含输入，避免密码或私有配置被回显。
@@ -317,13 +350,15 @@ class Session:
             runtime = self.gateway.router.runtime
             for topic in subscription.topics:
                 try:
-                    if topic in ('logs', 'preview', 'stock'):
+                    if topic in ('logs', 'preview', 'stock', 'notifications'):
                         continue
                     if (now := time.monotonic()) - self.topic_seen.get(topic, 0) < TOPIC_INTERVAL.get(topic, 2):
                         continue
                     self.topic_seen[topic] = now
                     if topic == 'instances':
                         action = runtime.instances
+                    elif topic == 'launcher':
+                        action = self.gateway.router.launcher.status
                     elif topic == 'overview':
                         action = lambda: runtime.overview(subscription.instance)
                     async with self.gateway.workers:
@@ -353,7 +388,7 @@ class Session:
                 self.topic_seen['statistics'] = time.monotonic()
                 try:
                     from module.api.statistics_service import get_statistics_fingerprint
-                    stats_fp = await asyncio.to_thread(get_statistics_fingerprint, subscription.instance)
+                    stats_fp = await asyncio.to_thread(get_statistics_fingerprint, subscription.instance, self.gateway.router.configs.directory)
                     if subscription is self.subscription:
                         old_fp = self.cache.get('statistics')
                         if old_fp is not None and old_fp != stats_fp:
@@ -490,5 +525,35 @@ class Session:
                     continue
                 frame = hub.get(subscription.instance)
                 await self.event('preview', frame)
+        finally:
+            hub.unsubscribe(changed)
+
+    async def notification_producer(self):
+        """任务通知生产者协程。
+
+        通知是一次性消息，跨实例推送、不按当前工作区过滤；未订阅时不缓存，
+        错过即错过，符合「送达正在看 WebUI 的用户」的定位。
+        """
+        from module.runtime.notify_hub import hub
+        loop = asyncio.get_running_loop()
+
+        def changed(notification):
+            if not loop.is_closed():
+                def wake():
+                    self.notification_pending.append(notification)
+                    self.notification_changed.set()
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(wake)
+
+        hub.subscribe(changed)
+        try:
+            while True:
+                await self.notification_changed.wait()
+                self.notification_changed.clear()
+                pending, self.notification_pending = self.notification_pending, []
+                if not self.authorized or 'notifications' not in self.subscription.topics:
+                    continue
+                for notification in pending:
+                    await self.event('notifications', notification)
         finally:
             hub.unsubscribe(changed)

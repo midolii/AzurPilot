@@ -1,5 +1,7 @@
 # 运行时服务（module/runtime）
 
+Cloudflare 模式、固定入口与 AFA 配对的使用及恢复契约见 [remote-access.md](remote-access.md)。
+
 > WebUI 服务子进程内的「进程与后台服务层」：管理每个配置实例的 alas worker 进程、驱动更新事务、调度 WebUI 后台任务、转发日志与截图预览，并为 MCP/远程访问/密码等横切能力提供实现；进程与状态归它管，HTTP 协议归 `module/api`，端口与监督归 `gui.py`。
 
 ## 1. 模块概述
@@ -22,7 +24,7 @@
 - 更新流程：`updater` 检查上游、编排停止-更新-重启事务，`module/api/update_service.py` 只是它的 WebUI 门面。
 - 被动截图通道：`preview.py` 接收 worker 截图、后台编码 JPEG、按实例保留最新帧。
 - 横切安全能力：`mcp_auth`（MCP 鉴权与会话）、`password_utils`（密码策略与本机判定）、`launcher_trust`（启动器信任令牌）。
-- 远程访问：`remote_access.py` 的 SSH 反向隧道与 WebRTC P2P 两种 provider 及自动切换。
+- 远程访问：`remote_access.py` 的 SSH / WebRTC provider，以及 `remote_cloudflare.py` 的 Quick Tunnel、固定入口续约与配对身份。
 - 部署设置：`deploy_settings` 定义表单 schema 与校验，`config.py` 的 `DeployConfig` 把属性赋值自动落盘到 `deploy.yaml`。
 - 共享状态根：`setting.py` 的 `State`（跨进程事件、SyncManager、进程注册表）。
 - 停止后收尾：`scheduler_stop` 在独立进程中执行返回主页/关游戏/关模拟器。
@@ -52,9 +54,10 @@ module/runtime/
 ├── preview.py             # PreviewHub：被动截图最新帧分发
 ├── scheduler_stop.py      # 手动停止后的收尾动作（独立进程执行）
 ├── remote_access.py       # SSH / WebRTC 远程访问 provider
+├── remote_cloudflare.py   # pyflared Quick Tunnel、固定入口续约与配对身份
 ├── mcp_auth.py            # MCP 鉴权：凭据提取、常数时间比对、会话表、日志脱敏
 ├── password_utils.py      # 密码生成/校验、本机判定、远程访问标记头
-├── launcher.py            # LauncherControl：外部启动器命令通道
+├── launcher.py            # LauncherService：应用级启动器 WS、命令与通知
 ├── launcher_trust.py      # 启动器信任免密令牌
 ├── discord_presence.py    # Discord Rich Presence（pypresence 异步客户端）
 └── event_calculator.py    # Wiki 活动计算器数据服务（当前无前端消费者）
@@ -216,7 +219,7 @@ flowchart TD
     F --> G["置位 dependency_sync_event + restart_event<br/>clearup() 后父监督器接管"]
 ```
 
-「先写盘再更新」是关键顺序：git reset/pull 即使报错也可能已部分改写源码，因此一旦开始更新，恢复只能走「依赖同步后重启」一条路。更新检查本身分两条路：`GitOverCdn` 开启时读 CDN 状态（`uptodate`/`behind`/`failed`，failed 回退 git）；否则 `git fetch` 后对比 `..origin/{Branch}`，本地存在上游没有的提交（开发分叉）时跳过更新。云端开关（`cloud_auto_update_enabled`）与强制更新开关每轮检查，强制开启时检查间隔缩短到 1 秒。
+「先写盘再更新」是关键顺序：git reset/pull 即使报错也可能已部分改写源码，因此一旦开始更新，恢复只能走「依赖同步后重启」一条路。更新检查本身分两条路：`GitOverCdn` 开启时读 CDN 状态（`uptodate`/`behind`/`failed`，failed 回退 git）；否则 `git fetch` 后对比 `..origin/{Branch}`，本地存在上游没有的提交（开发分叉）时跳过更新。更新总开关已移除；每轮只检查云端强制更新开关，开启时发现更新立即执行，并将检查间隔缩短到 1 秒。强制开关不可访问时按关闭处理，继续正常版本检查。
 
 ### 更新检查的调度
 
@@ -263,10 +266,15 @@ worker 启停:  API/MCP ──lifecycle lock──> ProcessManager.start/stop_by
        _preview_queue(≤2) ──预览转发线程(校验 runId)──> hub.publish ──回调──>
        socket.preview_producer ──event('preview')──> 浏览器（每实例仅最新一帧）
 
-更新:  云端开关/GitOverCdn/git fetch ──> updater.state ──> update_service 快照
+更新:  云端强制更新开关/GitOverCdn/git fetch ──> updater.state ──> update_service 快照
        run_update ──event.set()──> worker 任务边界退出 ──> reloadalas + pending 标记落盘
        ──restart_event──> gui.py 父监督器 ──依赖同步──> 重建 WebUI ──restart_processes──> 恢复实例
 ```
+
+预览是可丢帧的被动通道。复制预览副本或后台 JPEG 编码发生 `MemoryError` 时只丢当前预览帧，
+下次截图继续尝试；不能因额外预览分配失败中止已经取得有效截图的游戏任务。
+实际截图后端、识别与保存的内存异常仍沿原任务异常路径处理，不由预览通道吞掉。
+定向回归见 `tests.test_console_runtime.RuntimeTests` 的复制/编码失败与下一帧恢复用例。
 
 ## 9. 状态模型
 
@@ -305,8 +313,9 @@ stateDiagram-v2
 | `Update.AutoRestartTime` | str\|null | null | 每日定时更新时刻（ISO time）；null 则移除定时任务 |
 | `Update.EnableReload` | bool | true | false 时 `State.restart_event` 为 None，更新器拒绝执行热重载更新 |
 | `Git.GitOverCdn` | bool | false | 走 GitOverCdn 检查/更新，failed 时回退 `git pull` |
-| `RemoteAccess.RemoteAccessMode` | select | auto | `auto`/`webrtc`/`ssh`，决定激活哪个远程访问 provider |
+| `RemoteAccess.RemoteAccessMode` | select | auto | `auto`/`webrtc`/`ssh`/`cloudflare`，决定激活哪个远程访问 provider；Quick Tunnel 显式选择 |
 | `RemoteAccess.EnableRemoteAccess` | bool | false | 启动时挂载远程访问保活任务 |
+| `RemoteAccess.CloudflareRegistry` / `CloudflareDeviceId` | str | 注册服务入口 / 空 | Quick Tunnel 的 HTTPS 注册地址与安装 ID；空 ID 由身份文件首次生成并持久化 |
 | `RemoteAccess.SSHServer` / `SignalingServer` / `StunServers` / `TurnServers` | str\|null | null | 隧道与信令配置；未配置信令时从 SSHServer 推导 |
 | `Webui.Password` | str\|null | null | WebUI 与 MCP 共用密码；公网监听未设置时自动生成并回写 |
 | `Optimization.WhenSchedulerStopped`（实例配置） | select | stay_there | 手动停止后的收尾动作，`scheduler_stop` 消费 |
@@ -323,8 +332,8 @@ stateDiagram-v2
 | 启动收尾进程失败/超时 | 设备依赖异常、动作超过 30 秒 | 记录告警；超时收尾进程被终止，不影响已完成的停止 |
 | 更新等不到实例退出 | worker 卡在不可中断的设备操作 | 等待 10 分钟后 `stop()` 强停；仍有存活则取消更新并重启实例 |
 | git 更新失败 | 网络、锁文件、分叉 | 不回滚恢复计划——reset/pull 可能已部分完成，交父进程以「同步后重启」收场 |
-| 更新检查线程异常 | 云端开关不可达、git 命令失败 | `state = 0`（或 failed），下个周期重试；不中断调度任务 |
-| 云端开关不可访问 | 控制点网络失败 | `_check_update` 跳过本轮检查（`fatal=False`） |
+| 更新检查线程异常 | git 命令失败等 | `state = 0`（或 failed），下个周期重试；不中断调度任务 |
+| 云端强制更新开关不可访问 | 控制点网络失败 | 强制更新按关闭处理，继续正常版本检查 |
 | TaskHandler 任务抛异常 | 业务任务 bug | `logger.exception` 后立即移除该任务，其余任务不受影响 |
 | 预览队列异常（EOF/OSError） | worker 或队列消亡 | 转发线程退出；丢帧不中断实际任务，队列满时丢弃旧帧 |
 
@@ -342,7 +351,8 @@ stateDiagram-v2
 | TaskHandler 调度线程 | 服务子进程 daemon 线程 | `task_handler.start()` | `stop()` 置 `_alive=False` 后 join（2 秒超时） |
 | 更新检查线程 | 服务子进程 daemon 线程 | `updater.check_update` | 单次检查即结束 |
 | 日志/预览转发线程 ×2/实例 | 服务子进程线程 | `start_log_queue_handler` | 检测到本轮进程退出后 `join(1)` 回收 |
-| 远程访问线程 | 服务子进程**非 daemon** 线程 | provider.start() | stop_event 或进程内唯一线程时退出 |
+| SSH / WebRTC 远程访问线程 | 服务子进程**非 daemon** 线程 | provider.start() | stop_event 或进程内唯一线程时退出 |
+| Quick Tunnel 线程 | 服务子进程 daemon 线程 | CloudflareRemoteAccessProvider.start() | 独立 asyncio 循环；stop() 取消任务、上报离线并回收 cloudflared |
 | preview 编码线程 | **worker 进程内** daemon 线程 | `preview.initialize` | 队列断开即退出 |
 
 同步约束：
@@ -362,6 +372,7 @@ stateDiagram-v2
 | `config/webui-dependency-sync-pending` | updater（更新前） | gui.py（启动前检查）、setting（is/clear） | 存在即「必须先依赖同步再启动 WebUI」；仅同步成功后清除 |
 | `config/reloadalas` | updater（更新前写实例名单） | `ProcessManager.restart_processes` | 更新后待恢复的实例列表；恢复后删除 |
 | `config/deploy.yaml` | `DeployConfig.__setattr__` / `save_deploy_settings` | 全模块经 `State.deploy_config` | 部署设置唯一持久化点；属性赋值即落盘 |
+| `config/remote-access.json` | `remote_cloudflare.RemoteIdentity` | Quick Tunnel provider、WebSocket 网关 | 设备 ID、注册密钥与配对凭据摘要；原子写，损坏时拒绝自动重建身份 |
 | `config/stock-exchange/game.key` / `registry.json` | `game_data.GameDataProtector` | 交易代理、中央行动力历史与补传日志 | 独立随机游戏密钥及加密登记/检查点；不绑定主机、用户或项目路径 |
 | `config/stock-exchange/` | `GameDataProtector` / 交易代理 | 交易代理与历史采集 | 密文身份、绑定、补传 SQLite 与 `protected-v2` 标记；旧 cache 文件先搬到本目录再按常规流程处理 |
 | `password.txt`（仓库根） | `ensure_password_for_host` | 用户查看 | 公网监听自动生成的密码副本 |
@@ -374,14 +385,18 @@ macOS 同样使用该游戏密钥方案，无需账号保险库的本机提供�
 
 首次升级读取项目外 `<旧保护上下文>.game` 及对应本机密钥，认证通过后自动保存到新目录，保留原认证上下文和游戏密文，不重写历史。Linux 格式升级使用旧封装记录的主机元数据进行认证，不读取当前 `machine-id`；Windows 旧密钥仍需原用户的 DPAPI 解封。升级保留旧登记和旧密钥供恢复。`config/stock-exchange/protected-v2` 存在后，新登记缺失不能退回旧检查点；密钥、登记或受保护文件丢失/损坏均保留原文件并停止交易同步。玩家可在茗交所页面恢复备份或明确确认重建本地账户；重建新身份不能登录永久绑定原身份的远端账户。备份与部署要求见 [部署文档](../infra/deploy.md#茗交所持久化)。
 
-配置创建和删除不调用交易保护登记；新配置的 `_stockInstance` 为空占位，后续采集或交易使用时登记身份。普通 `ProgramStore` 读取跳过交易历史校验，采集行动力时尽力维护认证链，认证失败或交易历史表损坏仍提交正常资源记录和调度事务。交易历史采集显式使用 `strict_history=True`，继续拒绝损坏、回滚和跨实例历史。`stock_exchange_recovery.StockExchangeRecovery` 先返回重建范围，再在确认后保留 `config/backup/stock-rebuild-*/` 快照并重建；身份或单实例历史问题只重建当前实例，共享密钥、登记或绑定不可读时须确认所有本地账户。重建与代理请求、后台同步互斥，清除旧本地会话及补传历史，保留调度程序、变量和最新资源观察。
+配置创建和删除不创建交易保护身份；新配置的 `_stockInstance` 为空占位，后续采集或交易使用时登记。普通 `ProgramStore` 使用共享 `azurpilot.db`，`AuthenticatedHistoryStore` 单独维护原实例安全库及认证链。实际行动力采集分别写入两类存储；认证失败或安全历史表损坏只停止交易同步，普通资源观察与调度事务继续提交。交易历史采集使用安全存储的 `strict_history=True`，继续拒绝损坏、回滚和跨实例历史。
 
-交易所存储只约束交易所自身：`ProgramStore.connection` 默认按尽力记账处理，保护存储不可用时回滚可选历史认证步骤，实例的调度存储、普通资源观测与实例创建/删除继续执行；交易所自身的读取路径传入 `strict_history=True`，损坏仍按 `STOCK_STORAGE_DAMAGED` 失败。交易所页面可通过 `stock.rebuild` 先预览范围，再确认备份与重建。因此 `config/stock-exchange/` 与 `cache/stock-exchange/` 的丢失或损坏只中断交易所页面与后台同步，不再阻断实例运行。
+删除实例先备份配置、对应调度切片和安全历史，再移除配置与普通调度状态，统计保留原实例名。可信改名同步转移普通调度状态并重新映射文档和值集合引用；普通观察值不用于重建认证链。存储约定见 [普通业务数据存储](../infra/persistence.md)。
+
+`stock_exchange_recovery.StockExchangeRecovery` 先返回重建范围，再在明确确认后保留 `config/backup/stock-rebuild-*/` 安全快照并重建；身份或单实例历史问题只重建当前实例，共享密钥、登记或绑定不可读时须确认所有本地账户。重建与代理请求、后台同步互斥，清除旧本地会话及补传历史，保留总库的调度程序、变量和最新资源观察。
+
+TUI 使用相同服务边界；配置弹窗显示时，时钟刷新查询主屏幕的 `HeaderBar`，避免把弹窗当前屏幕当作主布局。
 
 ## 14. 生命周期
 
 - **创建**：`gui.py` 父监督器 spawn 服务子进程 → uvicorn 加载 `create_app` → lifespan 启动（`manage_runtime=True`）。
-- **初始化**（`module/api/lifecycle.startup`）：`State.init()` 创建 Manager 并认领登记所有权 → `updater.event = State.manager.Event()` → 按 `CheckUpdateInterval`/`AutoRestartTime` 装载更新任务、按 `EnableRemoteAccess` 挂载保活任务 → `TaskHandler.start()` → 可选启动 OCR 服务进程 → `ProcessManager.restart_processes(runs)`（CLI `--run` 或 `Webui.Run`）拉起实例。
+- **初始化**：lifespan 先执行普通总库安装级迁移，失败停止启动；随后 `module/api/lifecycle.startup`：`State.init()` 创建 Manager 并认领登记所有权 → `updater.event = State.manager.Event()` → 按 `CheckUpdateInterval`/`AutoRestartTime` 装载更新任务、按 `EnableRemoteAccess` 挂载保活任务 → `TaskHandler.start()` → 可选启动 OCR 服务进程 → `ProcessManager.restart_processes(runs)`（CLI `--run` 或 `Webui.Run`）拉起实例。
 - **运行**：TaskHandler 线程驱动周期任务；uvicorn 事件循环承载 API 与 MCP；worker 进程各自运行调度器。
 - **更新**：见第 6 节事务；结束时 `State._restart_requested = True`，clearup 逐项回收（TaskHandler → OCR → 远程访问 → 全部 worker），全部成功才 `State.clearup()`（关闭 Manager、清除 owner），随后父监督器终止本进程并重建。
 - **销毁**：父监督器 `_stop_webui_process_tree` 先停根（WebUI 及 SyncManager 等整树），再按登记回收 worker；父进程被强杀的场景由下一次启动的孤儿恢复兜底。
@@ -393,7 +408,7 @@ macOS 同样使用该游戏密钥方案，无需账号保险库的本机提供�
 - **新增 WebUI 后台周期任务**：在 `module/api/lifecycle.startup` 中 `task_handler.add(生成器, 初始延迟)`；生成器第一个 `yield` 接收 TaskHandler，可动态改 `th._task.delay`（参照 `updater.check_update_loop`）或 `th.remove_current_task()` 自毁。
 - **新增 worker 启动形态**：`_run_process` 的 `func` 分发已覆盖 `alas` / 单任务 / submodule / submodule 单功能四种；新增形态在此添加分支并让 `get_config_mod` 能解析对应配置名。
 - **新增停止收尾动作**：在 `scheduler_stop.STOP_ACTIONS` 加选项、`execute_stop_action` 加分支，并在 `module/config/argument/argument.yaml` 的 `WhenSchedulerStopped` 选项中登记（五个 i18n 文件补翻译）。
-- **新增远程访问 provider**：继承 `RemoteAccessProvider`（start/stop/is_alive/get_state/get_entry_point/get_connection_state/get_error 七个接口），接入 `AutoRemoteAccessProvider` 的模式分派。
+- **新增远程访问 provider**：实现 `RemoteAccessProvider` 的 start/stop/is_alive/get_state/get_entry_point/get_connection_state/get_error 七个接口，接入 `AutoRemoteAccessProvider` 的模式分派；Quick Tunnel 为独立实现。
 - **新增部署设置字段**：`deploy_settings.py` 的 `DEPLOY_GROUPS` 加 `DeployField`，`deploy/config.py` 加模板默认值，`gui.yaml` 补 `Gui.DeploySetting.*` 翻译；类型解析在 `_parse_value` 扩展。
 - **新增 MCP 端点保护**：只需扩展 `mcp_auth.ROUTE_METHODS` 与 `route_of` 的末尾匹配，`authorize` 会自动覆盖。
 
@@ -414,7 +429,7 @@ macOS 同样使用该游戏密钥方案，无需账号保险库的本机提供�
 - **`event_calculator.py` 当前没有生产消费者**（截至 2026-09）：自旧 PyWebIO 前端迁移而来，逻辑与单测完整，但新 React 前端尚未实现活动计算器页面。它是预留能力，接线前不会生效。启动器命令通道与免密令牌已由 `module/api/launcher_api.py` 接入 `create_app`。
 - worker 的更新退出依赖任务边界轮询（`wait_until` 每 5 秒、任务间每次循环），**正在执行的长任务会推迟更新等待**，因此事务里有 10 分钟超时强停兜底；强停可能让该实例下次启动时状态不完整。
 - `alive` 在登记不可验证时保守返回 False，配合 `start()` 的二次验证避免重复启动；但这意味着登记文件损坏期间（自愈前）实例可能显示为已停止。
-- 远程访问线程是非 daemon 线程，其退出依赖 `stop_event` 或「进程内唯一线程」检测；极端情况下（其他线程意外全部退出）可能延迟进程退出。
+- SSH / WebRTC 远程访问线程是非 daemon 线程，其退出依赖 `stop_event` 或「进程内唯一线程」检测；极端情况下（其他线程意外全部退出）可能延迟进程退出。Quick Tunnel 使用 daemon 线程及显式取消与子进程回收。
 - 预览每实例仅保留一帧且队列容量 2，快速连续截图时中间帧会被丢弃；这是设计（前端只看最新画面），不提供回放。
 - `restart_processes` 从 `reloadalas` 恢复实例时不校验实例是否仍存在（文件由 updater 按当时运行名单写入）；恢复一个刚被删除的实例会以启动失败告终并记录日志。
 
